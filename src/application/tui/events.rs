@@ -1,7 +1,3 @@
-//! Manejo de eventos de teclado y mouse usando crossterm.
-//!
-//! Implementa el patron Command para mapear eventos a acciones sobre AppState.
-
 use super::app_state::{AppState, InputMode, ViewMode};
 use super::ui;
 use crate::domain::OutputFormat;
@@ -10,7 +6,16 @@ use ratatui::{backend::Backend, Terminal};
 use std::io;
 use std::time::Duration;
 
-/// Ejecuta el loop principal de eventos y rendering.
+/// Ejecuta el loop principal de render y despacho de eventos.
+///
+/// El loop mantiene una frecuencia de sondeo moderada para equilibrar
+/// responsividad de terminal con consumo de CPU. Toda mutación pasa por
+/// `AppState`, de modo que el módulo conserva la disciplina de un único punto
+/// de verdad y evita divergencia entre render y manejo de eventos.
+///
+/// # Errors
+///
+/// Propaga fallos de `crossterm` o del backend de `ratatui`.
 pub fn ejecutar_bucle_eventos<B: Backend>(
     terminal: &mut Terminal<B>,
     aplicacion: &mut AppState,

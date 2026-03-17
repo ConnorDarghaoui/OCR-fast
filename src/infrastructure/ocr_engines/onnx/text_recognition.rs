@@ -1,8 +1,3 @@
-//! Reconocimiento de texto usando PaddleOCR v5.
-//!
-//! Toma recortes de imagen de lineas de texto individuales
-//! y produce el texto reconocido con nivel de confianza.
-
 use crate::infrastructure::ocr_engines::onnx::ctc_decoder;
 use crate::infrastructure::ocr_engines::onnx::preprocessing;
 use image::DynamicImage;
@@ -11,13 +6,19 @@ use ort::value::Tensor;
 use std::path::Path;
 use std::sync::Mutex;
 
-/// Reconocedor de texto basado en PaddleOCR v5 Latin.
+/// Reconocedor de líneas de texto basado en PaddleOCR Latin.
+///
+/// La estructura encapsula la sesión ONNX y el diccionario CTC. Agrupar ambos en
+/// una sola unidad evita inconsistencias entre modelo y vocabulario.
 pub struct TextRecognizer {
     sesion: Mutex<Session>,
     diccionario: Vec<String>,
 }
 
-/// Resultado de reconocimiento de una linea de texto.
+/// Resultado estable de reconocimiento para una línea individual.
+///
+/// Separar texto y confianza permite que callers decidan postproceso, filtrado o
+/// UI sin reinterpretar el payload bruto de CTC.
 #[derive(Debug, Clone)]
 pub struct ResultadoReconocimiento {
     pub texto: String,
@@ -25,7 +26,7 @@ pub struct ResultadoReconocimiento {
 }
 
 impl TextRecognizer {
-    /// Carga el modelo PaddleOCR rec y el diccionario de caracteres.
+    /// Carga el modelo de reconocimiento y su diccionario asociado.
     pub fn new(
         ruta_modelo: &Path,
         ruta_diccionario: &Path,
@@ -49,7 +50,7 @@ impl TextRecognizer {
         })
     }
 
-    /// Reconoce texto en un recorte de imagen de una linea.
+    /// Reconoce texto en un recorte correspondiente a una sola línea.
     pub fn reconocer(
         &self,
         recorte: &DynamicImage,
@@ -60,7 +61,9 @@ impl TextRecognizer {
 
         let input_tensor = Tensor::from_array((forma, datos_flat))?;
 
-        let mut sesion = self.sesion.lock()
+        let mut sesion = self
+            .sesion
+            .lock()
             .map_err(|e| format!("Mutex poisoned: {}", e))?;
         let salidas = sesion.run(ort::inputs![input_tensor])?;
 
@@ -82,11 +85,11 @@ impl TextRecognizer {
         Ok(ResultadoReconocimiento { texto, confianza })
     }
 
-    /// Reconoce texto en multiples recortes con inferencia batch real.
+    /// Reconoce múltiples recortes en una sola inferencia batch.
     ///
-    /// Preprocesa todos los recortes a altura 48, los padea al ancho maximo
-    /// y construye un tensor `[N, 3, 48, W_max]` para una sola llamada al modelo.
-    /// Mas eficiente que N llamadas individuales, especialmente en GPU.
+    /// El batching reduce overhead de despacho y aprovecha mejor GPU/CPU vectorial
+    /// cuando un bloque genera varias líneas. El padding al ancho máximo es el
+    /// costo asumido para obtener esa amortización.
     pub fn reconocer_batch(
         &self,
         recortes: &[DynamicImage],
@@ -120,25 +123,28 @@ impl TextRecognizer {
         let datos_flat: Vec<f32> = batch.as_standard_layout().iter().cloned().collect();
         let input_tensor = Tensor::from_array((forma, datos_flat))?;
 
-        let mut sesion = self.sesion.lock()
+        let mut sesion = self
+            .sesion
+            .lock()
             .map_err(|e| format!("Mutex poisoned: {}", e))?;
         let salidas = sesion.run(ort::inputs![input_tensor])?;
 
         let (forma_salida, datos) = salidas[0].try_extract_tensor::<f32>()?;
         let dims = &*forma_salida;
 
-        let vocab = if dims.len() == 3 { dims[2] as usize } else { self.diccionario.len() + 1 };
+        let vocab = if dims.len() == 3 {
+            dims[2] as usize
+        } else {
+            self.diccionario.len() + 1
+        };
         let t = datos.len() / (n * vocab);
 
         (0..n)
             .map(|i| {
                 let offset = i * t * vocab;
                 let slice = &datos[offset..offset + t * vocab];
-                let (texto, confianza) = ctc_decoder::decodificar_ctc_con_confianza(
-                    slice,
-                    vocab,
-                    &self.diccionario,
-                );
+                let (texto, confianza) =
+                    ctc_decoder::decodificar_ctc_con_confianza(slice, vocab, &self.diccionario);
                 Ok(ResultadoReconocimiento { texto, confianza })
             })
             .collect()

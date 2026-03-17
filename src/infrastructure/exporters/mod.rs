@@ -1,8 +1,3 @@
-//! Exportadores para diferentes formatos de salida.
-//!
-//! Este modulo contiene las implementaciones concretas del puerto
-//! `ExporterPort` para generar archivos de salida en diversos formatos.
-
 use crate::domain::errors::ExportError;
 use crate::domain::{BlockType, Job};
 use crate::interfaces::ports::ExporterPort;
@@ -10,17 +5,18 @@ use lopdf::dictionary;
 use std::fs;
 use std::path::Path;
 
-// Re-exportar el trait para compatibilidad
+/// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
 
-/// Exportador a formato Markdown.
+/// Exportador de documentos OCR a Markdown legible por humanos.
 ///
-/// Genera un archivo Markdown estructurado con el contenido
-/// extraido del documento.
+/// La implementación prioriza inspección y portabilidad: el resultado puede
+/// abrirse en cualquier editor de texto y es útil para debugging, diffing y
+/// revisión manual del OCR sin depender de herramientas especializadas.
 pub struct MarkdownExporter;
 
 impl MarkdownExporter {
-    /// Crea un nuevo exportador Markdown.
+    /// Construye un exportador Markdown sin estado interno.
     pub fn new() -> Self {
         Self
     }
@@ -104,15 +100,17 @@ impl ExporterPort for MarkdownExporter {
     }
 }
 
-/// Exportador a PDF Sandwich.
+/// Exportador a PDF sandwich con texto invisible seleccionable.
 ///
-/// Genera un PDF con la imagen original como fondo y una capa de texto
-/// invisible (render mode 3) superpuesta, posicionada segun las coordenadas
-/// de los bloques OCR. El resultado es un PDF buscable y con texto
-/// seleccionable.
+/// La estrategia conserva la imagen original como fondo y superpone una capa de
+/// texto OCR en coordenadas PDF. Ese diseño preserva fidelidad visual mientras
+/// habilita búsqueda y selección, que es el comportamiento esperado en flujos de
+/// archivo y revisión documental.
 ///
-/// Usa `lopdf` para construir el PDF directamente con operadores de la
-/// especificacion PDF, sin abstracciones intermedias.
+/// # Trade-offs
+///
+/// Usar `lopdf` directamente reduce abstracciones y dependencia de motores PDF
+/// pesados, pero obliga a controlar manualmente coordenadas y operadores.
 pub struct PdfSandwichExporter;
 
 /// DPI asumido para la conversion pixel -> puntos PDF.
@@ -135,7 +133,7 @@ const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
 const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
 
 impl PdfSandwichExporter {
-    /// Crea un nuevo exportador PDF Sandwich.
+    /// Construye un exportador PDF sandwich sin estado mutable.
     pub fn new() -> Self {
         Self
     }
@@ -251,10 +249,7 @@ impl ExporterPort for PdfSandwichExporter {
                         vec!["F1".into(), tamano_fuente.into()],
                     ));
                     // Td = Move text cursor
-                    operaciones_texto.push(Operation::new(
-                        "Td",
-                        vec![x_pt.into(), y_pt.into()],
-                    ));
+                    operaciones_texto.push(Operation::new("Td", vec![x_pt.into(), y_pt.into()]));
                     // Tj = Show text string
                     operaciones_texto.push(Operation::new(
                         "Tj",
@@ -276,7 +271,10 @@ impl ExporterPort for PdfSandwichExporter {
             let content_id = doc.add_object(lopdf::Stream::new(
                 dictionary! {},
                 content.encode().map_err(|e| {
-                    ExportError::SerializationError(format!("Error codificando content stream: {}", e))
+                    ExportError::SerializationError(format!(
+                        "Error codificando content stream: {}",
+                        e
+                    ))
                 })?,
             ));
 
@@ -328,9 +326,8 @@ impl ExporterPort for PdfSandwichExporter {
 
         // Comprimir y guardar
         doc.compress();
-        doc.save(output_path).map_err(|e| {
-            ExportError::SerializationError(format!("Error guardando PDF: {}", e))
-        })?;
+        doc.save(output_path)
+            .map_err(|e| ExportError::SerializationError(format!("Error guardando PDF: {}", e)))?;
 
         log::info!(
             "PDF Sandwich exportado: {} paginas -> {:?}",
@@ -380,10 +377,10 @@ impl PdfSandwichExporter {
     }
 }
 
-/// Exportador a formato JSON.
+/// Exportador a JSON estructurado para integración y depuración.
 ///
-/// Serializa el trabajo completo a JSON incluyendo
-/// toda la metadata y contenido extraido.
+/// A diferencia de Markdown o PDF, este formato prioriza preservación completa
+/// de metadatos y estructura para integraciones posteriores o pruebas.
 pub struct JsonExporter;
 
 impl JsonExporter {

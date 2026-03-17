@@ -1,8 +1,3 @@
-//! Deteccion de orientacion de documentos usando PP-LCNet.
-//!
-//! Detecta si una pagina esta rotada 0, 90, 180 o 270 grados
-//! y proporciona la correccion necesaria.
-
 use crate::domain::errors::OrientationError;
 use crate::infrastructure::ocr_engines::onnx::preprocessing;
 use image::DynamicImage;
@@ -11,7 +6,11 @@ use ort::value::Tensor;
 use std::path::Path;
 use std::sync::Mutex;
 
-/// Angulos posibles de orientacion detectables.
+/// Conjunto discreto de rotaciones soportadas por el clasificador.
+///
+/// Se modela como enum cerrado porque el detector actual clasifica 4 orientaciones
+/// ortogonales, no un ángulo continuo. Esto evita falsas expectativas sobre
+/// precisión sub-grado y simplifica la corrección posterior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientacion {
     Normal,
@@ -20,28 +19,38 @@ pub enum Orientacion {
     Rotado270,
 }
 
-/// Motor de deteccion de orientacion basado en PP-LCNet.
+/// Clasificador de orientación basado en PP-LCNet sobre ONNX Runtime.
+///
+/// La sesión se protege con `Mutex` para permitir uso compartido del detector
+/// desde varios puntos sin exigir ownership exclusivo de la instancia.
 pub struct OrientationDetector {
     sesion: Mutex<Session>,
 }
 
 impl OrientationDetector {
-    /// Carga el modelo PP-LCNet desde la ruta indicada.
+    /// Carga el modelo PP-LCNet desde disco y prepara su sesión ONNX.
     pub fn new(ruta_modelo: &Path) -> Result<Self, OrientationError> {
         let sesion = Session::builder()
             .and_then(|b| b.with_intra_threads(2))
             .and_then(|b| b.with_execution_providers(super::gpu_config::providers(0)))
             .and_then(|b| b.commit_from_file(ruta_modelo))
-            .map_err(|e| OrientationError::DetectionError(
-                format!("Error cargando PP-LCNet: {}", e)
-            ))?;
+            .map_err(|e| {
+                OrientationError::DetectionError(format!("Error cargando PP-LCNet: {}", e))
+            })?;
 
         log::info!("PP-LCNet Orientation cargado desde: {:?}", ruta_modelo);
 
-        Ok(Self { sesion: Mutex::new(sesion) })
+        Ok(Self {
+            sesion: Mutex::new(sesion),
+        })
     }
 
-    /// Clasifica la orientacion de la imagen (0/90/180/270 grados).
+    /// Clasifica la orientación dominante de la imagen.
+    ///
+    /// # Errors
+    ///
+    /// Falla si la sesión ONNX no puede ejecutarse o si la imagen no puede
+    /// convertirse al tensor esperado por el modelo.
     pub fn detectar(&self, imagen: &DynamicImage) -> Result<Orientacion, OrientationError> {
         let tensor_datos = preprocessing::preparar_para_orientacion(imagen);
         let forma: Vec<i64> = tensor_datos.shape().iter().map(|&d| d as i64).collect();
@@ -50,9 +59,12 @@ impl OrientationDetector {
         let input_tensor = Tensor::from_array((forma, datos_flat))
             .map_err(|e| OrientationError::DetectionError(format!("Error tensor: {}", e)))?;
 
-        let mut sesion = self.sesion.lock()
+        let mut sesion = self
+            .sesion
+            .lock()
             .map_err(|e| OrientationError::DetectionError(format!("Mutex poisoned: {}", e)))?;
-        let salidas = sesion.run(ort::inputs![input_tensor])
+        let salidas = sesion
+            .run(ort::inputs![input_tensor])
             .map_err(|e| OrientationError::DetectionError(format!("Error inferencia: {}", e)))?;
 
         let (_forma, datos) = salidas[0]
@@ -73,11 +85,15 @@ impl OrientationDetector {
             _ => Orientacion::Normal,
         };
 
-        log::info!("Orientacion: {:?} (confianza: {:.2}%)", orientacion, confianza * 100.0);
+        log::info!(
+            "Orientacion: {:?} (confianza: {:.2}%)",
+            orientacion,
+            confianza * 100.0
+        );
         Ok(orientacion)
     }
 
-    /// Detecta la orientacion y aplica la rotacion correctiva necesaria.
+    /// Detecta orientación y devuelve la imagen corregida.
     pub fn corregir(&self, imagen: &DynamicImage) -> Result<DynamicImage, OrientationError> {
         let orientacion = self.detectar(imagen)?;
         let corregida = match orientacion {

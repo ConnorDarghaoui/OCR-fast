@@ -1,8 +1,3 @@
-//! Estado global de la TUI y unico punto que lanza threads de procesamiento.
-//!
-//! Cada job corre en su propio thread y se comunica via `mpsc`. Ningun otro
-//! modulo de la TUI gestiona canales directamente.
-
 use crate::application::pipeline::{OcrPipeline, PipelineEvent, MSG_JOB_CANCELADO};
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
 use crate::infrastructure::exporters::{JsonExporter, MarkdownExporter, PdfSandwichExporter};
@@ -14,7 +9,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
-/// Vista actual de la aplicacion.
+/// Máquina de navegación visible de la interfaz.
+///
+/// Mantener las vistas como enum en vez de IDs dinámicos evita estados
+/// imposibles y simplifica el matching exhaustivo durante render y eventos.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     /// Pantalla de carga inicial (modelos).
@@ -29,10 +27,12 @@ pub enum ViewMode {
     Help,
 }
 
-/// [COMPONENTE] Enumeracion de estado de interaccion TUI.
+/// Modo de interpretación de teclado activo en la TUI.
 ///
-/// [PROPÓSITO] Discretizar la modalidad de recepcion de eventos del teclado,
-/// aislando los comandos de navegacion global respecto de la captura de texto crudo en inputs.
+/// El enum separa navegación global de captura textual para evitar que atajos de
+/// vista y escritura compitan por el mismo evento. Es una forma barata de
+/// modelar focus sin introducir un árbol completo de widgets con ownership
+/// complejo sobre el estado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     /// Modo normal: comandos vim-like y navegacion de componentes.
@@ -41,14 +41,18 @@ pub enum InputMode {
     Editing,
 }
 
-/// [COMPONENTE] Contrato de eventos de hilo (Background -> TUI).
+/// Eventos emitidos por el hilo de carga del motor OCR.
 ///
-/// [PROPÓSITO] Actuar como capa DTO para la sincronizacion asincrona del estado
-/// de inicializacion de modelos AI (que es I/O y CPU intensivo), previniendo el bloqueo
-/// del event loop de pintado de la terminal.
+/// Este enum existe para desacoplar el thread de bootstrap ONNX del event loop de
+/// la TUI. Cada variante transporta ownership completo para evitar lifetimes entre
+/// hilos y para que el receiver pueda drenar eventos de forma opportunistic.
 pub enum MotorCargaEvento {
     /// Transmite la metadata del bloque de descarga instanciado hacia el sistema log.
-    Descargando { nombre: String, actual: usize, total: usize },
+    Descargando {
+        nombre: String,
+        actual: usize,
+        total: usize,
+    },
     /// Tasa de actualizacion de telemetria en bytes transferidos puros.
     DescargandoBytes { bytes_actual: u64, bytes_total: u64 },
     /// Informacion de la capa de acceleracion instanciada.
@@ -59,11 +63,23 @@ pub enum MotorCargaEvento {
     Error(String),
 }
 
-/// [COMPONENTE] Estructura de Memoria Central de Interfaz.
+/// Estado maestro de la interfaz y coordinador de trabajos en background.
 ///
-/// [PROPÓSITO] Preservar la unica fuente de verdad (Single Source of Truth) para 
-/// todos los datos renderizables de la terminal. Actua a su vez como controlador maestro
-/// asincrono almacenando los descriptores TX/RX de los trabajos derivados al pool the workers.
+/// `AppState` concentra toda la información renderizable y todos los handles de
+/// coordinación asincrónica. Esta decisión reduce complejidad accidental: ningún
+/// otro módulo de TUI abre canales ni lanza workers por su cuenta, lo que vuelve
+/// más fácil razonar sobre cancelación, selección y persistencia.
+///
+/// # Concurrency
+///
+/// Los jobs y la carga del motor viven en hilos del sistema operativo y se
+/// comunican únicamente por `mpsc` y flags atómicos. El estado de UI permanece en
+/// un solo hilo, por lo que no requiere `Mutex` ni interior mutability pesada.
+///
+/// # Trade-offs
+///
+/// La estructura es grande y mezcla concerns de presentación y coordinación. A
+/// cambio, minimiza saltos entre módulos y evita inconsistencias de estado.
 pub struct AppState {
     pub trabajos: Vec<Job>,
     pub indice_seleccionado: usize,
@@ -115,11 +131,16 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Crea un nuevo estado de la aplicacion con dependencias inyectadas.
+    /// Construye el estado inicial de la aplicación a partir de dependencias.
     ///
-    /// Carga los trabajos previos desde el `job_store` al arrancar.
-    /// Los trabajos que quedaron en estado `Processing` (sesion interrumpida)
-    /// se marcan automaticamente como `Failed`.
+    /// La inicialización recupera snapshots previos del `JobStore` y normaliza
+    /// trabajos interrumpidos para no exponer estados fantasma de `Processing`
+    /// tras reinicios abruptos.
+    ///
+    /// # Notes
+    ///
+    /// El motor OCR arranca como dependencia ya inyectada, pero puede ser luego
+    /// reemplazado por una instancia ONNX cargada en background.
     pub fn nuevo(
         analizador_documentos: Arc<dyn DocumentParserPort>,
         motor_ocr: Arc<dyn OcrEnginePort>,
@@ -166,24 +187,28 @@ impl AppState {
         estado
     }
 
-    /// Agrega un log al sistema con timestamp.
+    /// Añade una entrada al buffer circular de logs visibles en UI.
+    ///
+    /// El historial se recorta deliberadamente para mantener coste de render y
+    /// memoria acotados durante sesiones largas.
     pub fn loguear(&mut self, mensaje: String) {
         const MAX_REGISTROS: usize = 100;
         let marca_tiempo = chrono::Local::now().format("%H:%M:%S").to_string();
-        self.registros.push_back(format!("[{}] {}", marca_tiempo, mensaje));
+        self.registros
+            .push_back(format!("[{}] {}", marca_tiempo, mensaje));
         if self.registros.len() > MAX_REGISTROS {
             self.registros.pop_front();
         }
     }
 
-    /// Selecciona el siguiente trabajo en la lista.
+    /// Avanza la selección en la lista circular de trabajos.
     pub fn seleccionar_siguiente(&mut self) {
         if !self.trabajos.is_empty() {
             self.indice_seleccionado = (self.indice_seleccionado + 1) % self.trabajos.len();
         }
     }
 
-    /// Selecciona el trabajo anterior en la lista.
+    /// Retrocede la selección en la lista circular de trabajos.
     pub fn seleccionar_anterior(&mut self) {
         if !self.trabajos.is_empty() {
             if self.indice_seleccionado > 0 {
@@ -194,47 +219,40 @@ impl AppState {
         }
     }
 
-    /// Obtiene el trabajo seleccionado actualmente.
+    /// Retorna una vista inmutable del trabajo actualmente enfocado.
     pub fn obtener_trabajo_seleccionado(&self) -> Option<&Job> {
         self.trabajos.get(self.indice_seleccionado)
     }
 
-    /// Cambia a modo de edicion para agregar un nuevo archivo.
+    /// Entra en modo de captura textual para un nuevo input de archivo.
     pub fn iniciar_agregar_archivo(&mut self) {
         self.modo_entrada = InputMode::Editing;
         self.buffer_entrada.clear();
     }
 
-    /// Cancela la edicion y vuelve a modo normal.
+    /// Aborta la captura textual y restaura el modo normal.
     pub fn cancelar_edicion(&mut self) {
         self.modo_entrada = InputMode::Normal;
         self.buffer_entrada.clear();
     }
 
-    /// [COMPONENTE] Controlador de validacion de entrada de archivos.
+    /// Valida la ruta ingresada y transiciona a selección de formato.
     ///
-    /// [PROPÓSITO] Validar el input del usuario garantizando que el archivo existe
-    /// y posee una extension soportada antes de transicionar al estado de seleccion de formato.
+    /// La validación ocurre antes de crear el `Job` para rechazar errores de input
+    /// del usuario sin contaminar estado de cola ni disparar parseo costoso.
     ///
-    /// [ENTRADAS] Ninguna, consume desde el estado interno (`buffer_entrada`).
+    /// # Errors
     ///
-    /// [FLUJO DE EJECUCIÓN] 
-    /// |> Verifica que el buffer no este vacio.
-    /// |> Delega al sistema operativo la verificacion de existencia y tipo de archivo.
-    /// |> Extrae y normaliza la extension para validarla contra la lista de extensiones permitidas.
-    /// |> Muta el estado interno para persistir la ruta pendiente, restaurar modos de interfaz y habilitar la seleccion de formato.
-    ///
-    /// [RESULTADO] `Result<(), String>`: Transicion de estado exitosa.
-    ///
-    /// [EXCEPCIONES] Retorna `Err` explicito si la ruta esta vacia, el archivo es inaccesible, o el formato no es util para OCR.
+    /// Retorna `Err(String)` si la ruta está vacía, no existe, no es archivo o
+    /// tiene una extensión fuera del conjunto soportado.
     pub fn procesar_archivo_ingresado(&mut self) -> Result<(), String> {
         if self.buffer_entrada.is_empty() {
             return Err("Ruta de archivo vacia".to_string());
         }
         let ruta = self.buffer_entrada.clone();
 
-        let meta = std::fs::metadata(&ruta)
-            .map_err(|_| format!("Archivo no encontrado: {}", ruta))?;
+        let meta =
+            std::fs::metadata(&ruta).map_err(|_| format!("Archivo no encontrado: {}", ruta))?;
         if !meta.is_file() {
             return Err(format!("La ruta no es un archivo: {}", ruta));
         }
@@ -259,21 +277,12 @@ impl AppState {
         Ok(())
     }
 
-    /// [COMPONENTE] Metodo de confirmacion de seleccion.
+    /// Confirma el formato elegido y delega la creación del trabajo.
     ///
-    /// [PROPÓSITO] Extraer el estado pendiente seleccionado por el usuario y delegar la instanciacion del trabajo (Job).
+    /// # Errors
     ///
-    /// [ENTRADAS] Consume la `ruta_pendiente` e `indice_formato` del estado interno.
-    ///
-    /// [FLUJO DE EJECUCIÓN] 
-    /// |> Extrae la ruta pendiente consumiendola.
-    /// |> Resuelve el tipo de formato basado en el indice seleccionado.
-    /// |> Muta el estado interno restaurando los parametros de seleccion de formato.
-    /// |> Delega a `crear_trabajo` la construccion con los parametros recolectados.
-    ///
-    /// [RESULTADO] `Result<(), String>`
-    ///
-    /// [EXCEPCIONES] Retorna `Err` si no existe una ruta pendiente en el estado.
+    /// Falla si la UI perdió la ruta pendiente o si la creación del job no puede
+    /// completarse por validaciones posteriores.
     pub fn confirmar_formato(&mut self) -> Result<(), String> {
         let ruta = self.ruta_pendiente.take().ok_or("Sin ruta pendiente")?;
         let formato = OutputFormat::OPCIONES[self.indice_formato];
@@ -287,11 +296,11 @@ impl AppState {
     /// [PROPÓSITO] Construir, persistir y encolar la entidad Job en base a los parametros confirmados,
     /// aplicando validaciones de proteccion frente a la inmadurez de infraestructura (motores cargando).
     ///
-    /// [ENTRADAS] 
+    /// [ENTRADAS]
     /// - `ruta`: Ruta del archivo objetivo almacenada como String.
     /// - `formato`: El formato de salida destino.
     ///
-    /// [FLUJO DE EJECUCIÓN] 
+    /// [FLUJO DE EJECUCIÓN]
     /// |> Valida el bloqueo de control contra inicializaciones asincronas del motor.
     /// |> Ejecuta alertas preventivas en caso de usar el motor degradado (Stub).
     /// |> Valida mediante iteracion si el archivo base ya se encuentra en cola para prevenir repeticion de carga.
@@ -350,7 +359,11 @@ impl AppState {
         self.trabajos.push(trabajo);
         self.indice_seleccionado = self.trabajos.len() - 1;
 
-        let mensaje_log = format!("Nuevo trabajo creado: {} ({})", &id_trabajo[..8], formato.nombre());
+        let mensaje_log = format!(
+            "Nuevo trabajo creado: {} ({})",
+            &id_trabajo[..8],
+            formato.nombre()
+        );
         self.loguear(mensaje_log);
         self.iniciar_procesamiento_fondo(id_trabajo);
 
@@ -359,13 +372,13 @@ impl AppState {
 
     /// [COMPONENTE] Orquestador de hilos de ejecucion (Spawner).
     ///
-    /// [PROPÓSITO] Separar y aislar la computacion costosa (OCR) del bloque sincronizador (TUI), promoviendo 
+    /// [PROPÓSITO] Separar y aislar la computacion costosa (OCR) del bloque sincronizador (TUI), promoviendo
     /// un diseno verdaderamente concurrente basado en pasos de mensajes puros (mpsc).
     ///
-    /// [ENTRADAS] 
+    /// [ENTRADAS]
     /// - `id_trabajo`: Cadena del identificador unico a procesar.
     ///
-    /// [FLUJO DE EJECUCIÓN] 
+    /// [FLUJO DE EJECUCIÓN]
     /// |> Busca el indice estructural del Job local asociado.
     /// |> Muta el indicador de progreso y el estado a Procesando.
     /// |> Inicializa el canal asincrono (TX/RX) y anexa el RX al manejador global continuo.
@@ -384,7 +397,8 @@ impl AppState {
         };
 
         self.trabajos[indice].status = JobStatus::Processing;
-        self.fase_actual.insert(id_trabajo.clone(), "Iniciando...".to_string());
+        self.fase_actual
+            .insert(id_trabajo.clone(), "Iniciando...".to_string());
         self.progreso_actual.insert(id_trabajo.clone(), 0.0);
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -392,7 +406,8 @@ impl AppState {
 
         // Crear flag de cancelacion para este job
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        self.cancelaciones_activas.insert(id_trabajo.clone(), Arc::clone(&cancel_flag));
+        self.cancelaciones_activas
+            .insert(id_trabajo.clone(), Arc::clone(&cancel_flag));
 
         let analizador = Arc::clone(&self.analizador_documentos);
         let motor = Arc::clone(&self.motor_ocr);
@@ -421,10 +436,18 @@ impl AppState {
             }
         });
 
-        log::info!("Procesamiento iniciado para trabajo {}", self.trabajos[indice].id);
+        log::info!(
+            "Procesamiento iniciado para trabajo {}",
+            self.trabajos[indice].id
+        );
     }
 
-    /// Cancela el trabajo actualmente seleccionado si esta en progreso.
+    /// Solicita cancelación cooperativa del trabajo seleccionado.
+    ///
+    /// # Concurrency
+    ///
+    /// La cancelación se implementa con un `AtomicBool` compartido para evitar
+    /// matar hilos a la fuerza o introducir cancelación asíncrona insegura.
     pub fn cancelar_trabajo_seleccionado(&mut self) {
         let id_trabajo = match self.trabajos.get(self.indice_seleccionado) {
             Some(j) if j.status == JobStatus::Processing => j.id.clone(),
@@ -438,10 +461,11 @@ impl AppState {
         }
     }
 
-    /// Arranca el thread de inicializacion del motor ONNX en background.
+    /// Lanza en background la adquisición de modelos y carga de ONNX.
     ///
-    /// Descarga y sesion ONNX pueden tardar minutos; correrlos en background
-    /// mantiene la TUI responsiva durante la pantalla de carga inicial.
+    /// La TUI se mantiene responsiva mientras la inicialización pesada ocurre en
+    /// un hilo aparte. El resultado se propaga por canal para permitir fallback a
+    /// stub sin bloquear el arranque de la aplicación.
     pub fn iniciar_carga_motor(&mut self) {
         let (tx, rx) = std::sync::mpsc::channel::<MotorCargaEvento>();
         self.receptor_motor = Some(rx);
@@ -450,7 +474,9 @@ impl AppState {
         self.loguear("Iniciando descarga/carga de modelos ONNX...".to_string());
 
         std::thread::spawn(move || {
-            use crate::infrastructure::ocr_engines::onnx::{gpu_config, ModelDownloader, OnnxOcrEngine};
+            use crate::infrastructure::ocr_engines::onnx::{
+                gpu_config, ModelDownloader, OnnxOcrEngine,
+            };
 
             let estado_gpu = gpu_config::inicializar(0);
             let _ = tx.send(MotorCargaEvento::GpuInfo {
@@ -477,16 +503,20 @@ impl AppState {
 
             let tx_bytes = tx.clone();
             let on_bytes = |bytes_actual: u64, bytes_total: u64| {
-                let _ = tx_bytes.send(MotorCargaEvento::DescargandoBytes { bytes_actual, bytes_total });
+                let _ = tx_bytes.send(MotorCargaEvento::DescargandoBytes {
+                    bytes_actual,
+                    bytes_total,
+                });
             };
 
-            let ruta_modelos = match downloader.asegurar_todos_los_modelos(Some(&on_archivo), Some(&on_bytes)) {
-                Ok(ruta) => ruta,
-                Err(e) => {
-                    let _ = tx.send(MotorCargaEvento::Error(e.to_string()));
-                    return;
-                }
-            };
+            let ruta_modelos =
+                match downloader.asegurar_todos_los_modelos(Some(&on_archivo), Some(&on_bytes)) {
+                    Ok(ruta) => ruta,
+                    Err(e) => {
+                        let _ = tx.send(MotorCargaEvento::Error(e.to_string()));
+                        return;
+                    }
+                };
 
             match OnnxOcrEngine::from_directory(&ruta_modelos) {
                 Ok(engine) => {
@@ -499,10 +529,10 @@ impl AppState {
         });
     }
 
-    /// Drena todos los canales activos en un tick del event loop.
+    /// Drena en un tick tanto el canal del motor como los pipelines activos.
     ///
-    /// Motor primero: garantiza que el swap ONNX->stub ocurra antes de procesar
-    /// eventos de pipelines que se pudieron lanzar justo despues del swap.
+    /// El motor se consulta primero para asegurar que un swap de backend ocurra
+    /// antes de reaccionar a jobs que dependan de ese estado.
     pub fn consultar_trabajos(&mut self) {
         self.consultar_motor();
         self.consultar_pipelines();
@@ -529,14 +559,24 @@ impl AppState {
                 };
                 self.loguear(format!("Aceleracion: {}", self.gpu_info));
             }
-            MotorCargaEvento::Descargando { nombre, actual, total } => {
+            MotorCargaEvento::Descargando {
+                nombre,
+                actual,
+                total,
+            } => {
                 self.progreso_carga_motor = actual as f32 / total as f32;
                 self.fase_carga_motor = format!("Descargando {} ({}/{})", nombre, actual, total);
                 self.bytes_carga_actual = 0;
                 self.bytes_carga_total = 0;
-                self.loguear(format!("Descargando modelo {}/{}: {}", actual, total, nombre));
+                self.loguear(format!(
+                    "Descargando modelo {}/{}: {}",
+                    actual, total, nombre
+                ));
             }
-            MotorCargaEvento::DescargandoBytes { bytes_actual, bytes_total } => {
+            MotorCargaEvento::DescargandoBytes {
+                bytes_actual,
+                bytes_total,
+            } => {
                 self.bytes_carga_actual = bytes_actual;
                 self.bytes_carga_total = bytes_total;
             }
@@ -557,7 +597,10 @@ impl AppState {
                 if self.vista_actual == ViewMode::Initializing {
                     self.vista_actual = ViewMode::JobList;
                 }
-                self.loguear(format!("Error motor ONNX: {}. Usando Stub (resultados ficticios).", e));
+                self.loguear(format!(
+                    "Error motor ONNX: {}. Usando Stub (resultados ficticios).",
+                    e
+                ));
                 self.mostrar_estado(format!("Error motor ONNX: {}", e));
                 self.receptor_motor = None;
             }
@@ -581,32 +624,41 @@ impl AppState {
                         self.fase_actual.insert(id_trabajo.clone(), fase);
                         self.progreso_actual.insert(id_trabajo.clone(), progreso);
                     }
-                    PipelineEvent::ProgresoActualizado { pagina_actual, total_paginas } => {
+                    PipelineEvent::ProgresoActualizado {
+                        pagina_actual,
+                        total_paginas,
+                    } => {
                         if let Some(fase) = self.fase_actual.get_mut(id_trabajo) {
-                            *fase = format!(
-                                "{} (pagina {}/{})",
-                                fase, pagina_actual, total_paginas
-                            );
+                            *fase =
+                                format!("{} (pagina {}/{})", fase, pagina_actual, total_paginas);
                         }
                     }
                     PipelineEvent::Completado(documento) => {
                         let mut ruta_export: Option<std::path::PathBuf> = None;
                         let mut export_resultado: Option<Result<(), String>> = None;
 
-                        if let Some(trabajo) = self.trabajos.iter_mut().find(|j| &j.id == id_trabajo) {
+                        if let Some(trabajo) =
+                            self.trabajos.iter_mut().find(|j| &j.id == id_trabajo)
+                        {
                             trabajo.document = documento;
                             trabajo.status = JobStatus::Completed;
                             trabajo.completed_at = Some(std::time::SystemTime::now());
 
-                            let ruta = trabajo.document.source_path
+                            let ruta = trabajo
+                                .document
+                                .source_path
                                 .with_extension(trabajo.formato_salida.extension());
-                            let resultado = exportar_segun_formato(trabajo, &ruta)
-                                .map_err(|e| e.to_string());
+                            let resultado =
+                                exportar_segun_formato(trabajo, &ruta).map_err(|e| e.to_string());
                             ruta_export = Some(ruta);
                             export_resultado = Some(resultado);
 
                             if let Err(e) = self.job_store.update(trabajo) {
-                                log::warn!("No se pudo actualizar job {} en disco: {}", id_trabajo, e);
+                                log::warn!(
+                                    "No se pudo actualizar job {} en disco: {}",
+                                    id_trabajo,
+                                    e
+                                );
                             }
                         }
 
@@ -617,7 +669,11 @@ impl AppState {
                                 }
                             }
                             Some(Err(e)) => {
-                                self.loguear(format!("Error auto-export {}: {}", &id_trabajo[..8], e));
+                                self.loguear(format!(
+                                    "Error auto-export {}: {}",
+                                    &id_trabajo[..8],
+                                    e
+                                ));
                             }
                             None => {}
                         }
@@ -633,7 +689,9 @@ impl AppState {
                         // y necesita mapear a JobStatus::Cancelled vs JobStatus::Failed.
                         let es_cancelacion = mensaje == MSG_JOB_CANCELADO;
 
-                        if let Some(trabajo) = self.trabajos.iter_mut().find(|j| &j.id == id_trabajo) {
+                        if let Some(trabajo) =
+                            self.trabajos.iter_mut().find(|j| &j.id == id_trabajo)
+                        {
                             if es_cancelacion {
                                 trabajo.status = JobStatus::Cancelled;
                                 trabajo.error_message = None;
@@ -643,15 +701,27 @@ impl AppState {
                             }
 
                             if let Err(e) = self.job_store.update(trabajo) {
-                                log::warn!("No se pudo actualizar job {} en disco: {}", id_trabajo, e);
+                                log::warn!(
+                                    "No se pudo actualizar job {} en disco: {}",
+                                    id_trabajo,
+                                    e
+                                );
                             }
 
                             if es_cancelacion {
                                 self.loguear(format!("Trabajo {} cancelado", &id_trabajo[..8]));
                                 self.mostrar_estado(format!("Job {} cancelado", &id_trabajo[..8]));
                             } else {
-                                self.loguear(format!("Error en trabajo {}: {}", &id_trabajo[..8], mensaje));
-                                self.mostrar_estado(format!("Error en {}: {}", &id_trabajo[..8], mensaje));
+                                self.loguear(format!(
+                                    "Error en trabajo {}: {}",
+                                    &id_trabajo[..8],
+                                    mensaje
+                                ));
+                                self.mostrar_estado(format!(
+                                    "Error en {}: {}",
+                                    &id_trabajo[..8],
+                                    mensaje
+                                ));
                             }
                         }
                         trabajos_terminados.push(id_trabajo.clone());
@@ -689,19 +759,23 @@ impl AppState {
         eventos
     }
 
+    /// Indica si existen pipelines activos aún no drenados por la TUI.
     pub fn hay_trabajos_en_progreso(&self) -> bool {
         !self.receptores_activos.is_empty()
     }
 
+    /// Cambia de vista y reinicia el scroll contextual asociado.
     pub fn cambiar_vista(&mut self, vista: ViewMode) {
         self.vista_actual = vista;
         self.scroll_detalle = 0;
     }
 
+    /// Marca la aplicación para salir en el siguiente ciclo de eventos.
     pub fn salir(&mut self) {
         self.debe_salir = true;
     }
 
+    /// Elimina el trabajo seleccionado y purga sus estructuras auxiliares.
     pub fn eliminar_trabajo_seleccionado(&mut self) {
         if self.trabajos.is_empty() {
             return;
@@ -726,6 +800,7 @@ impl AppState {
         self.loguear(format!("Trabajo {} eliminado", &id_trabajo[..8]));
     }
 
+    /// Exporta el trabajo seleccionado a Markdown.
     pub fn exportar_trabajo_markdown(&mut self) {
         let trabajo = match self.obtener_trabajo_seleccionado() {
             Some(j) => j.clone(),
@@ -747,6 +822,7 @@ impl AppState {
         }
     }
 
+    /// Exporta el trabajo seleccionado a JSON.
     pub fn exportar_trabajo_json(&mut self) {
         let trabajo = match self.obtener_trabajo_seleccionado() {
             Some(j) => j.clone(),
@@ -768,6 +844,7 @@ impl AppState {
         }
     }
 
+    /// Exporta el trabajo seleccionado a PDF sandwich.
     pub fn exportar_trabajo_pdf(&mut self) {
         let trabajo = match self.obtener_trabajo_seleccionado() {
             Some(j) => j.clone(),
@@ -789,10 +866,12 @@ impl AppState {
         }
     }
 
+    /// Publica un mensaje flash temporal para feedback inmediato.
     pub fn mostrar_estado(&mut self, mensaje: String) {
         self.mensaje_estado = Some((mensaje, std::time::Instant::now()));
     }
 
+    /// Retorna el mensaje flash vigente si aún no expiró.
     pub fn obtener_estado(&self) -> Option<&str> {
         self.mensaje_estado.as_ref().and_then(|(msg, time)| {
             if time.elapsed() < std::time::Duration::from_secs(3) {
@@ -803,10 +882,19 @@ impl AppState {
         })
     }
 
+    /// Elimina de memoria y de storage los trabajos ya terminales.
+    ///
+    /// # Trade-offs
+    ///
+    /// La operación recorre la colección completa para conservar invariantes entre
+    /// lista, canales activos y estructuras de progreso. El costo es lineal pero
+    /// aceptable para el volumen esperado de jobs locales.
     pub fn limpiar_trabajos_finalizados(&mut self) {
         let antes = self.trabajos.len();
 
-        let ids_a_eliminar: Vec<String> = self.trabajos.iter()
+        let ids_a_eliminar: Vec<String> = self
+            .trabajos
+            .iter()
             .filter(|j| {
                 j.status == JobStatus::Completed
                     || j.status == JobStatus::Failed
@@ -831,8 +919,10 @@ impl AppState {
         let ids_activos: Vec<String> = self.trabajos.iter().map(|j| j.id.clone()).collect();
         self.fase_actual.retain(|k, _| ids_activos.contains(k));
         self.progreso_actual.retain(|k, _| ids_activos.contains(k));
-        self.receptores_activos.retain(|k, _| ids_activos.contains(k));
-        self.cancelaciones_activas.retain(|k, _| ids_activos.contains(k));
+        self.receptores_activos
+            .retain(|k, _| ids_activos.contains(k));
+        self.cancelaciones_activas
+            .retain(|k, _| ids_activos.contains(k));
 
         if self.indice_seleccionado >= self.trabajos.len() && !self.trabajos.is_empty() {
             self.indice_seleccionado = self.trabajos.len() - 1;
@@ -847,21 +937,30 @@ impl AppState {
         }
     }
 
+    /// Desplaza el detalle visible una línea hacia abajo.
     pub fn scroll_detalle_abajo(&mut self) {
         self.scroll_detalle = self.scroll_detalle.saturating_add(1);
     }
 
+    /// Desplaza el detalle visible una línea hacia arriba con saturación en cero.
     pub fn scroll_detalle_arriba(&mut self) {
         self.scroll_detalle = self.scroll_detalle.saturating_sub(1);
     }
 }
 
 /// Exporta un job al formato solicitado en la ruta indicada.
-fn exportar_segun_formato(job: &Job, ruta: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn exportar_segun_formato(
+    job: &Job,
+    ruta: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     match job.formato_salida {
-        OutputFormat::Markdown => MarkdownExporter::new().export(job, ruta).map_err(|e| e.into()),
-        OutputFormat::Pdf      => PdfSandwichExporter::new().export(job, ruta).map_err(|e| e.into()),
-        OutputFormat::Json     => JsonExporter::new().export(job, ruta).map_err(|e| e.into()),
+        OutputFormat::Markdown => MarkdownExporter::new()
+            .export(job, ruta)
+            .map_err(|e| e.into()),
+        OutputFormat::Pdf => PdfSandwichExporter::new()
+            .export(job, ruta)
+            .map_err(|e| e.into()),
+        OutputFormat::Json => JsonExporter::new().export(job, ruta).map_err(|e| e.into()),
     }
 }
 
@@ -875,25 +974,29 @@ fn cargar_trabajos_iniciales(store: &dyn JobStorePort) -> (Vec<Job>, Vec<String>
             let total = jobs.len();
             normalizar_jobs_al_arranque(&mut jobs);
 
-            let interrumpidos = jobs.iter()
-                .filter(|j| j.error_message.as_deref() == Some(
-                    "Interrumpido: la aplicacion se cerro durante el procesamiento"
-                ))
+            let interrumpidos = jobs
+                .iter()
+                .filter(|j| {
+                    j.error_message.as_deref()
+                        == Some("Interrumpido: la aplicacion se cerro durante el procesamiento")
+                })
                 .count();
 
             // Persistir los jobs normalizados (Processing -> Failed)
             for job in &jobs {
                 if job.status == JobStatus::Failed
-                    && job.error_message.as_deref() == Some(
-                        "Interrumpido: la aplicacion se cerro durante el procesamiento"
-                    )
+                    && job.error_message.as_deref()
+                        == Some("Interrumpido: la aplicacion se cerro durante el procesamiento")
                 {
                     let _ = store.update(job);
                 }
             }
 
             if total > 0 {
-                mensajes.push(format!("{} trabajos recuperados de sesiones anteriores", total));
+                mensajes.push(format!(
+                    "{} trabajos recuperados de sesiones anteriores",
+                    total
+                ));
             }
             if interrumpidos > 0 {
                 mensajes.push(format!(

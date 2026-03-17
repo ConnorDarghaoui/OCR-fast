@@ -1,12 +1,18 @@
-//! Servicios de preprocesamiento de imagenes.
-//!
-//! Orden de aplicacion optimo: denoise → binarize → deskew.
-
 use crate::domain::errors::PreprocessError;
 use crate::domain::Document;
 use crate::interfaces::ports::PreprocessorPort;
 
-/// Preprocesador de imagenes con pipeline configurable.
+/// Pipeline configurable de preprocesamiento raster previo a OCR.
+///
+/// El preprocesador encapsula operaciones clásicas de limpieza sobre imágenes
+/// escaneadas. Se mantiene como adaptador separado para poder apagarlo cuando el
+/// input proviene de PDFs nativos o imágenes ya limpias.
+///
+/// # Trade-offs
+///
+/// Las transformaciones son globales por página y no por bloque. Eso simplifica
+/// el pipeline y evita múltiples recompresiones, pero puede ser subóptimo para
+/// documentos heterogéneos con regiones muy distintas.
 pub struct ImagePreprocessor {
     /// Aplicar binarizacion Otsu.
     apply_binarization: bool,
@@ -19,7 +25,7 @@ pub struct ImagePreprocessor {
 }
 
 impl ImagePreprocessor {
-    /// Crea un preprocesador con configuracion por defecto.
+    /// Crea un preprocesador con una política balanceada por defecto.
     pub fn new() -> Self {
         Self {
             apply_binarization: true,
@@ -29,14 +35,19 @@ impl ImagePreprocessor {
         }
     }
 
-    /// Crea un preprocesador con configuracion personalizada.
+    /// Crea un preprocesador con control explícito sobre cada fase.
     pub fn with_config(
         apply_binarization: bool,
         apply_deskew: bool,
         apply_denoise: bool,
         target_dpi: u32,
     ) -> Self {
-        Self { apply_binarization, apply_deskew, apply_denoise, target_dpi }
+        Self {
+            apply_binarization,
+            apply_deskew,
+            apply_denoise,
+            target_dpi,
+        }
     }
 
     /// Elimina ruido gaussiano con suavizado ligero (sigma=0.8).
@@ -79,9 +90,7 @@ impl ImagePreprocessor {
 
         // Suma total ponderada de intensidades
         let total_pixeles = (ancho * alto) as f64;
-        let suma_total: f64 = (0..256usize)
-            .map(|i| i as f64 * histograma[i] as f64)
-            .sum();
+        let suma_total: f64 = (0..256usize).map(|i| i as f64 * histograma[i] as f64).sum();
 
         // Metodo de Otsu: maximizar varianza inter-clase
         let mut mejor_umbral = 128u8;
@@ -183,7 +192,10 @@ impl ImagePreprocessor {
 
         // Tolerancia: no corregir si el angulo es menor a 0.2 grados
         if mejor_angulo.abs() < 0.2 {
-            log::debug!("Deskew: angulo {:.2}° dentro de tolerancia, sin correccion", mejor_angulo);
+            log::debug!(
+                "Deskew: angulo {:.2}° dentro de tolerancia, sin correccion",
+                mejor_angulo
+            );
             return Ok(());
         }
 
@@ -248,11 +260,7 @@ fn varianza_proyeccion_h(img: &image::GrayImage) -> f64 {
     }
 
     let proyeccion: Vec<f64> = (0..alto)
-        .map(|y| {
-            (0..ancho)
-                .filter(|&x| img.get_pixel(x, y)[0] < 128)
-                .count() as f64
-        })
+        .map(|y| (0..ancho).filter(|&x| img.get_pixel(x, y)[0] < 128).count() as f64)
         .collect();
 
     let media = proyeccion.iter().sum::<f64>() / proyeccion.len() as f64;

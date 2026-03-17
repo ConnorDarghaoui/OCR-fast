@@ -1,27 +1,12 @@
-//! Descargador de modelos ONNX desde Hugging Face.
-//! Almacena los modelos en ~/.local/share/ocrfast/models/<categoria>/<archivo>.
-//!
-//! ## SHA256: Como actualizar los checksums
-//!
-//! Una vez descargados los modelos por primera vez, ejecutar:
-//!
-//! ```bash
-//! find ~/.local/share/ocrfast/models -type f | sort | xargs sha256sum
-//! ```
-//!
-//! Copiar cada hash en el campo `sha256_esperado` de la definicion correspondiente.
-//! Las descargas futuras verificaran la integridad del archivo descargado.
-//! ADEMAS, los modelos ya existentes en disco se reverificaran si tienen checksum definido.
-
 use crate::domain::errors::ModelDownloadError;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const CHUNK_SIZE: usize = 65_536;       // 64 KB por lectura
+const CHUNK_SIZE: usize = 65_536; // 64 KB por lectura
 const MAX_REINTENTOS: u32 = 3;
 const ESPERA_REINTENTO_SECS: u64 = 2;
-const CHUNKS_POR_REPORTE: usize = 8;    // reportar progreso cada 512 KB
+const CHUNKS_POR_REPORTE: usize = 8; // reportar progreso cada 512 KB
 
 struct ModelDefinition {
     categoria: &'static str,
@@ -99,12 +84,24 @@ const MODELOS_REQUERIDOS: &[ModelDefinition] = &[
     },
 ];
 
+/// Gestor local de artefactos ONNX con verificación y reintentos.
+///
+/// El downloader abstrae una preocupación operativa distinta del engine: red,
+/// integridad y almacenamiento local. Mantener esa lógica separada permite que la
+/// carga de sesiones ONNX suponga un directorio consistente y no deba lidiar con
+/// descargas parciales ni recuperación de corrupción.
+///
+/// # Trade-offs
+///
+/// El gestor usa descargas blocking y escritura a disco local, lo que simplifica
+/// semántica de errores y recovery en una aplicación de escritorio.
 pub struct ModelDownloader {
     directorio_base: PathBuf,
     cliente_http: reqwest::blocking::Client,
 }
 
 impl ModelDownloader {
+    /// Construye un downloader usando la ruta local estándar de OCRFast.
     pub fn new() -> Result<Self, ModelDownloadError> {
         let directorio_base = dirs::data_local_dir()
             .ok_or_else(|| {
@@ -124,6 +121,12 @@ impl ModelDownloader {
         })
     }
 
+    /// Construye un downloader apuntando a un directorio explícito.
+    ///
+    /// # Notes
+    ///
+    /// Esta variante existe para tests, empaquetado y escenarios donde el caller
+    /// controla la ubicación física de los modelos.
     pub fn with_directory(directorio: PathBuf) -> Result<Self, ModelDownloadError> {
         Ok(Self {
             directorio_base: directorio,
@@ -134,21 +137,25 @@ impl ModelDownloader {
         })
     }
 
+    /// Retorna el directorio base en el que se materializan los modelos.
     pub fn directorio_base(&self) -> &Path {
         &self.directorio_base
     }
 
+    /// Retorna el número total de artefactos requeridos por el pipeline actual.
     pub fn total_modelos_requeridos() -> usize {
         MODELOS_REQUERIDOS.len()
     }
 
-    /// Verifica y descarga todos los modelos faltantes.
+    /// Garantiza que el conjunto completo de modelos exista y sea utilizable.
     ///
-    /// Si un modelo ya existe en disco Y tiene `sha256_esperado` definido, se reverifica
-    /// su integridad. Un archivo corrupto se elimina y se vuelve a descargar.
+    /// La función revalida integridad cuando existe checksum conocido y reintenta
+    /// descargas transitorias. Solo retorna éxito cuando el árbol de artefactos
+    /// queda en estado consistente para inicializar el engine.
     ///
-    /// - `on_archivo`: llamado antes de descargar cada archivo `(nombre, idx, total)`.
-    /// - `on_bytes`: llamado cada ~512 KB durante la descarga `(bytes_descargados, bytes_totales)`.
+    /// # Errors
+    ///
+    /// Retorna `ModelDownloadError` si falla red, filesystem o integridad.
     pub fn asegurar_todos_los_modelos(
         &self,
         on_archivo: Option<&dyn Fn(&str, usize, usize)>,
@@ -158,7 +165,10 @@ impl ModelDownloader {
         let mut descargados = 0usize;
 
         for def in MODELOS_REQUERIDOS {
-            let destino = self.directorio_base.join(def.categoria).join(def.nombre_archivo);
+            let destino = self
+                .directorio_base
+                .join(def.categoria)
+                .join(def.nombre_archivo);
 
             if destino.exists() {
                 // Si el modelo ya existe y tiene checksum, reverificar integridad en disco.
@@ -179,7 +189,11 @@ impl ModelDownloader {
                             // Cae al bloque de descarga abajo
                         }
                         Err(e) => {
-                            log::warn!("Error verificando checksum de '{}': {}", def.nombre_archivo, e);
+                            log::warn!(
+                                "Error verificando checksum de '{}': {}",
+                                def.nombre_archivo,
+                                e
+                            );
                             // Asumir corrupto y re-descargar
                             let _ = fs::remove_file(&destino);
                         }
@@ -195,7 +209,13 @@ impl ModelDownloader {
                 cb(def.nombre_archivo, descargados, total);
             }
 
-            log::info!("Descargando modelo [{}/{}]: {}/{}", descargados, total, def.categoria, def.nombre_archivo);
+            log::info!(
+                "Descargando modelo [{}/{}]: {}/{}",
+                descargados,
+                total,
+                def.categoria,
+                def.nombre_archivo
+            );
             self.descargar_con_reintentos(def, &destino, on_bytes)?;
         }
 
@@ -235,7 +255,8 @@ impl ModelDownloader {
                         }
                         None => log::info!(
                             "SHA256 de {}: {} (sin verificacion configurada)",
-                            def.nombre_archivo, hash
+                            def.nombre_archivo,
+                            hash
                         ),
                         _ => log::debug!("SHA256 verificado: {}", def.nombre_archivo),
                     }
@@ -243,7 +264,10 @@ impl ModelDownloader {
                     return Ok(());
                 }
                 Err(e) => {
-                    if matches!(e, ModelDownloadError::NotFound(_) | ModelDownloadError::IntegrityError { .. }) {
+                    if matches!(
+                        e,
+                        ModelDownloadError::NotFound(_) | ModelDownloadError::IntegrityError { .. }
+                    ) {
                         return Err(e);
                     }
                     ultimo_error = e;
@@ -251,7 +275,11 @@ impl ModelDownloader {
                     if intento < MAX_REINTENTOS {
                         log::warn!(
                             "Intento {}/{} fallido para {}: {}. Reintentando en {}s...",
-                            intento, MAX_REINTENTOS, def.nombre_archivo, ultimo_error, ESPERA_REINTENTO_SECS
+                            intento,
+                            MAX_REINTENTOS,
+                            def.nombre_archivo,
+                            ultimo_error,
+                            ESPERA_REINTENTO_SECS
                         );
                         std::thread::sleep(std::time::Duration::from_secs(ESPERA_REINTENTO_SECS));
                     }
@@ -291,7 +319,11 @@ impl ModelDownloader {
         }
 
         let bytes_totales = respuesta.content_length().unwrap_or(0);
-        log::info!("Descargando {} ({:.1} MB)...", def.nombre_archivo, bytes_totales as f64 / 1_048_576.0);
+        log::info!(
+            "Descargando {} ({:.1} MB)...",
+            def.nombre_archivo,
+            bytes_totales as f64 / 1_048_576.0
+        );
 
         let mut archivo = fs::File::create(temporal)?;
         let mut hasher = Sha256::new();
@@ -328,22 +360,35 @@ impl ModelDownloader {
             cb(bytes_escritos, bytes_escritos);
         }
 
-        log::info!("{} descargado ({:.1} MB)", def.nombre_archivo, bytes_escritos as f64 / 1_048_576.0);
+        log::info!(
+            "{} descargado ({:.1} MB)",
+            def.nombre_archivo,
+            bytes_escritos as f64 / 1_048_576.0
+        );
         Ok(format!("{:x}", hasher.finalize()))
     }
 
+    /// Indica si un artefacto nominal ya existe en el directorio local.
     pub fn modelo_existe(&self, categoria: &str, nombre_archivo: &str) -> bool {
-        self.directorio_base.join(categoria).join(nombre_archivo).exists()
+        self.directorio_base
+            .join(categoria)
+            .join(nombre_archivo)
+            .exists()
     }
 
+    /// Construye la ruta esperada de un artefacto de modelo concreto.
     pub fn ruta_modelo(&self, categoria: &str, nombre_archivo: &str) -> PathBuf {
         self.directorio_base.join(categoria).join(nombre_archivo)
     }
 
+    /// Indica si el conjunto completo de modelos requeridos ya está disponible.
     pub fn todos_los_modelos_disponibles(&self) -> bool {
-        MODELOS_REQUERIDOS.iter().all(|def| self.modelo_existe(def.categoria, def.nombre_archivo))
+        MODELOS_REQUERIDOS
+            .iter()
+            .all(|def| self.modelo_existe(def.categoria, def.nombre_archivo))
     }
 
+    /// Lista los artefactos requeridos que aún no existen localmente.
     pub fn modelos_faltantes(&self) -> Vec<String> {
         MODELOS_REQUERIDOS
             .iter()

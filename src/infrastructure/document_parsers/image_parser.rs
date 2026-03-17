@@ -1,12 +1,7 @@
-//! Parser de documentos basado en imagenes y PDF.
-//!
-//! Lee archivos de imagen (PNG, JPG, etc.) y documentos PDF.
-//! Para PDF, utiliza `PdfiumRenderer` para rasterizar las paginas.
-
 use crate::domain::errors::DocumentError;
 use crate::domain::{Dimensions, Document, Page};
-use crate::interfaces::ports::{DocumentParserPort, PdfRendererPort};
 use crate::infrastructure::document_parsers::pdf_renderer::PdfiumRenderer;
+use crate::interfaces::ports::{DocumentParserPort, PdfRendererPort};
 use image::GenericImageView;
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,15 +11,30 @@ const EXTENSIONES_IMAGEN: &[&str] = &["png", "jpg", "jpeg", "tiff", "tif", "bmp"
 /// Extensiones PDF soportadas.
 const EXTENSIONES_PDF: &[&str] = &["pdf"];
 
-/// Parser de documentos hibrido (Imagen + PDF).
+/// Parser híbrido para imágenes directas y PDF rasterizado.
 ///
-/// Soporta imagenes directas y documentos PDF (via PdfiumRenderer embebido).
-/// No requiere dependencias externas del sistema.
+/// La implementación normaliza formatos heterogéneos a `Document + Vec<Page>` en
+/// memoria, de modo que el resto del pipeline pueda operar sin distinguir si el
+/// input original era raster o paginado. El soporte PDF se resuelve mediante
+/// `PdfiumRenderer`, pero el parser degrada con gracia a modo solo-imágenes si
+/// `pdfium` no está disponible.
+///
+/// # Trade-offs
+///
+/// El parser materializa cada página como PNG en memoria para simplificar
+/// interoperabilidad entre fases. Esa decisión aumenta uso temporal de RAM, pero
+/// evita formatos intermedios ad hoc y reduce dependencias entre módulos.
 pub struct ImageDocumentParser {
     pdf_renderer: Option<PdfiumRenderer>,
 }
 
 impl ImageDocumentParser {
+    /// Construye el parser y detecta si el soporte PDF está operativo.
+    ///
+    /// # Notes
+    ///
+    /// La ausencia de `pdfium` no se trata como error fatal porque la aplicación
+    /// todavía puede operar sobre imágenes simples.
     pub fn new() -> Self {
         let pdf_renderer = match PdfiumRenderer::new() {
             Ok(r) => {
@@ -32,7 +42,10 @@ impl ImageDocumentParser {
                 Some(r)
             }
             Err(e) => {
-                log::warn!("Soporte PDF no disponible: {}. Solo se procesaran imagenes.", e);
+                log::warn!(
+                    "Soporte PDF no disponible: {}. Solo se procesaran imagenes.",
+                    e
+                );
                 None
             }
         };
@@ -58,7 +71,8 @@ impl ImageDocumentParser {
 
     fn procesar_imagen(&self, path: &Path) -> Result<Vec<Page>, DocumentError> {
         // Detectar si es TIFF para usar el decoder multi-pagina
-        let es_tiff = path.extension()
+        let es_tiff = path
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| matches!(e.to_lowercase().as_str(), "tiff" | "tif"))
             .unwrap_or(false);
@@ -80,7 +94,10 @@ impl ImageDocumentParser {
 
         Ok(vec![Page {
             number: 1,
-            dimensions: Dimensions { width: ancho, height: alto },
+            dimensions: Dimensions {
+                width: ancho,
+                height: alto,
+            },
             blocks: Vec::new(),
             image_data: Some(bytes_png),
         }])
@@ -106,38 +123,50 @@ impl ImageDocumentParser {
 
         loop {
             // Obtener dimensiones de la pagina actual
-            let (ancho, alto) = decoder.dimensions()
-                .map_err(|e| DocumentError::ImageError(format!("Error leyendo dimensiones TIFF p{}: {}", numero_pagina, e)))?;
+            let (ancho, alto) = decoder.dimensions().map_err(|e| {
+                DocumentError::ImageError(format!(
+                    "Error leyendo dimensiones TIFF p{}: {}",
+                    numero_pagina, e
+                ))
+            })?;
 
             // Decodificar pixeles a imagen dinamica de `image`
-            let imagen_dyn = match decoder.colortype()
-                .map_err(|e| DocumentError::ImageError(format!("Error leyendo color type TIFF: {}", e)))?
-            {
+            let imagen_dyn = match decoder.colortype().map_err(|e| {
+                DocumentError::ImageError(format!("Error leyendo color type TIFF: {}", e))
+            })? {
                 ColorType::RGB(8) | ColorType::RGBA(8) => {
-                    let datos = decoder.read_image()
-                        .map_err(|e| DocumentError::ImageError(format!("Error leyendo pixeles TIFF p{}: {}", numero_pagina, e)))?;
+                    let datos = decoder.read_image().map_err(|e| {
+                        DocumentError::ImageError(format!(
+                            "Error leyendo pixeles TIFF p{}: {}",
+                            numero_pagina, e
+                        ))
+                    })?;
                     let pixeles = match datos {
                         tiff::decoder::DecodingResult::U8(v) => v,
                         other => {
-                            return Err(DocumentError::ImageError(
-                                format!("Formato de pixel TIFF inesperado en p{}: {:?}", numero_pagina, other)
-                            ));
+                            return Err(DocumentError::ImageError(format!(
+                                "Formato de pixel TIFF inesperado en p{}: {:?}",
+                                numero_pagina, other
+                            )));
                         }
                     };
                     // Construir imagen a partir de pixeles raw
                     image::DynamicImage::ImageRgb8(
-                        image::RgbImage::from_raw(ancho, alto, pixeles)
-                            .ok_or_else(|| DocumentError::ImageError(
-                                format!("Buffer insuficiente para TIFF p{}", numero_pagina)
-                            ))?
+                        image::RgbImage::from_raw(ancho, alto, pixeles).ok_or_else(|| {
+                            DocumentError::ImageError(format!(
+                                "Buffer insuficiente para TIFF p{}",
+                                numero_pagina
+                            ))
+                        })?,
                     )
                 }
                 // Para formatos grises y otros, convertir via image::open fallback por pagina
                 _ => {
                     // Fallback: abrir con la crate image (carga solo pagina 0 del TIFF)
                     if numero_pagina == 1 {
-                        image::open(path)
-                            .map_err(|e| DocumentError::ImageError(format!("Fallback TIFF p1: {}", e)))?
+                        image::open(path).map_err(|e| {
+                            DocumentError::ImageError(format!("Fallback TIFF p1: {}", e))
+                        })?
                     } else {
                         break; // Solo podemos acceder a p1 por el fallback
                     }
@@ -148,7 +177,10 @@ impl ImageDocumentParser {
 
             paginas.push(Page {
                 number: numero_pagina,
-                dimensions: Dimensions { width: ancho, height: alto },
+                dimensions: Dimensions {
+                    width: ancho,
+                    height: alto,
+                },
                 blocks: Vec::new(),
                 image_data: Some(bytes_png),
             });
@@ -162,26 +194,35 @@ impl ImageDocumentParser {
         }
 
         if paginas.is_empty() {
-            return Err(DocumentError::ImageError("TIFF sin paginas decodificables".to_string()));
+            return Err(DocumentError::ImageError(
+                "TIFF sin paginas decodificables".to_string(),
+            ));
         }
 
-        log::info!("TIFF multi-pagina: {} paginas extraidas de {:?}", paginas.len(), path);
+        log::info!(
+            "TIFF multi-pagina: {} paginas extraidas de {:?}",
+            paginas.len(),
+            path
+        );
         Ok(paginas)
     }
 
     /// Codifica una DynamicImage a bytes PNG.
     fn encode_png(imagen: &image::DynamicImage) -> Result<Vec<u8>, DocumentError> {
         let mut bytes_png = std::io::Cursor::new(Vec::new());
-        imagen.write_to(&mut bytes_png, image::ImageFormat::Png)
+        imagen
+            .write_to(&mut bytes_png, image::ImageFormat::Png)
             .map_err(|e| DocumentError::ImageError(format!("Error codificando PNG: {}", e)))?;
         Ok(bytes_png.into_inner())
     }
 
     fn procesar_pdf(&self, path: &Path) -> Result<Vec<Page>, DocumentError> {
-        let renderer = self.pdf_renderer.as_ref()
-            .ok_or_else(|| DocumentError::PdfError(
-                "libpdfium no disponible. Ejecute 'cargo build' para descargarla automaticamente.".to_string()
-            ))?;
+        let renderer = self.pdf_renderer.as_ref().ok_or_else(|| {
+            DocumentError::PdfError(
+                "libpdfium no disponible. Ejecute 'cargo build' para descargarla automaticamente."
+                    .to_string(),
+            )
+        })?;
 
         let num_paginas = renderer.get_page_count(path)?;
         let mut pages = Vec::new();
@@ -191,8 +232,11 @@ impl ImageDocumentParser {
             let (ancho, alto) = imagen.dimensions();
 
             let mut bytes_png = std::io::Cursor::new(Vec::new());
-            imagen.write_to(&mut bytes_png, image::ImageFormat::Png)
-                .map_err(|e| DocumentError::ImageError(format!("Error codificando pagina PDF {}: {}", i, e)))?;
+            imagen
+                .write_to(&mut bytes_png, image::ImageFormat::Png)
+                .map_err(|e| {
+                    DocumentError::ImageError(format!("Error codificando pagina PDF {}: {}", i, e))
+                })?;
 
             pages.push(Page {
                 number: i,
@@ -216,6 +260,12 @@ impl Default for ImageDocumentParser {
 }
 
 impl DocumentParserPort for ImageDocumentParser {
+    /// Convierte un archivo físico a la representación de dominio inicial.
+    ///
+    /// # Errors
+    ///
+    /// Retorna `DocumentError` cuando el recurso no existe, no tiene un formato
+    /// soportado o no puede decodificarse a páginas raster válidas.
     fn parse(&self, path: &Path) -> Result<Document, DocumentError> {
         if !path.exists() {
             return Err(DocumentError::NotFound(path.to_path_buf()));
@@ -241,11 +291,18 @@ impl DocumentParserPort for ImageDocumentParser {
         } else {
             self.procesar_imagen(path)?
         };
-        
-        log::info!("Documento parseado en {:.2}s ({} paginas)", start.elapsed().as_secs_f32(), pages.len());
+
+        log::info!(
+            "Documento parseado en {:.2}s ({} paginas)",
+            start.elapsed().as_secs_f32(),
+            pages.len()
+        );
 
         let mut metadata = HashMap::new();
-        metadata.insert("source_format".into(), if is_pdf { "pdf".into() } else { "image".into() });
+        metadata.insert(
+            "source_format".into(),
+            if is_pdf { "pdf".into() } else { "image".into() },
+        );
         metadata.insert(
             "filename".to_string(),
             path.file_name()

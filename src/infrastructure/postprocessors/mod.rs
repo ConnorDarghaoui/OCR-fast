@@ -1,19 +1,13 @@
-//! Servicios de postprocesamiento de texto.
-//!
-//! Este modulo contiene implementaciones del puerto `PostprocessorPort`
-//! para mejorar el texto extraido por el OCR.
-
 use crate::domain::errors::OcrError;
 use crate::domain::Document;
 use crate::interfaces::ports::PostprocessorPort;
 
-/// Postprocesador de texto con correcciones automaticas.
+/// Postprocesador textual configurable para limpieza y normalización OCR.
 ///
-/// Aplica transformaciones al texto extraido:
-/// - Normalizacion Unicode (NFC)
-/// - Correccion de espaciado
-/// - Correccion por diccionario (opcional, dependiente del idioma)
-/// - Limpieza de caracteres invalidos
+/// Separa heurísticas lingüísticas del engine OCR para que la calidad textual
+/// pueda evolucionar sin reentrenar modelos ni mezclar reglas de negocio con
+/// inferencia. El diseño basado en flags permite desactivar transformaciones con
+/// riesgo en contextos donde fidelidad literal importe más que legibilidad.
 pub struct TextPostprocessor {
     /// Aplicar normalizacion Unicode.
     normalize_unicode: bool,
@@ -27,7 +21,7 @@ pub struct TextPostprocessor {
 }
 
 impl TextPostprocessor {
-    /// Crea un postprocesador con configuracion por defecto (idioma espanol).
+    /// Crea un postprocesador con defaults seguros para uso general.
     pub fn new() -> Self {
         Self {
             normalize_unicode: true,
@@ -37,7 +31,7 @@ impl TextPostprocessor {
         }
     }
 
-    /// Crea un postprocesador con configuracion personalizada.
+    /// Crea un postprocesador con configuración explícita de transformaciones.
     pub fn with_config(normalize_unicode: bool, fix_spacing: bool, use_dictionary: bool) -> Self {
         Self {
             normalize_unicode,
@@ -47,7 +41,7 @@ impl TextPostprocessor {
         }
     }
 
-    /// Configura el idioma del diccionario de correcciones.
+    /// Selecciona el idioma base del diccionario de correcciones.
     pub fn with_language(mut self, language: &str) -> Self {
         self.language = language.to_string();
         self
@@ -94,19 +88,19 @@ impl TextPostprocessor {
         // en palabras comunes: barn→bam, internal→intemal, arrive→arri\u{0077}e).
         const CORRECCIONES_SECUENCIA: &[(&str, &str)] = &[
             // Ligaduras mal decodificadas (Unicode -> ASCII equivalente)
-            ("\u{FB01}", "fi"),   // fi ligature
-            ("\u{FB02}", "fl"),   // fl ligature
-            ("\u{FB03}", "ffi"),  // ffi ligature
-            ("\u{FB04}", "ffl"),  // ffl ligature
+            ("\u{FB01}", "fi"),  // fi ligature
+            ("\u{FB02}", "fl"),  // fl ligature
+            ("\u{FB03}", "ffi"), // ffi ligature
+            ("\u{FB04}", "ffl"), // ffl ligature
             // Comillas tipograficas -> comillas ASCII (inofensivo, mejora busqueda)
-            ("\u{2018}", "'"),    // left single quote -> apostrophe
-            ("\u{2019}", "'"),    // right single quote -> apostrophe
-            ("\u{201C}", "\""),   // left double quote
-            ("\u{201D}", "\""),   // right double quote
+            ("\u{2018}", "'"),  // left single quote -> apostrophe
+            ("\u{2019}", "'"),  // right single quote -> apostrophe
+            ("\u{201C}", "\""), // left double quote
+            ("\u{201D}", "\""), // right double quote
             // Guiones especiales -> guion simple
-            ("\u{2014}", "-"),    // em dash
-            ("\u{2013}", "-"),    // en dash
-            ("\u{00AD}", ""),     // soft hyphen (caracter invisible, eliminar)
+            ("\u{2014}", "-"), // em dash
+            ("\u{2013}", "-"), // en dash
+            ("\u{00AD}", ""),  // soft hyphen (caracter invisible, eliminar)
         ];
 
         // Correcciones de palabra completa para ingles (ISO 639-3: "eng").
@@ -151,15 +145,18 @@ impl TextPostprocessor {
         }
 
         let palabras: Vec<&str> = resultado.split_whitespace().collect();
-        let corregidas: Vec<String> = palabras.iter().map(|palabra| {
-            let minuscula = palabra.to_lowercase();
-            for (error, correccion) in correcciones_palabra {
-                if minuscula == *error {
-                    return correccion.to_string();
+        let corregidas: Vec<String> = palabras
+            .iter()
+            .map(|palabra| {
+                let minuscula = palabra.to_lowercase();
+                for (error, correccion) in correcciones_palabra {
+                    if minuscula == *error {
+                        return correccion.to_string();
+                    }
                 }
-            }
-            palabra.to_string()
-        }).collect();
+                palabra.to_string()
+            })
+            .collect();
 
         corregidas.join(" ")
     }

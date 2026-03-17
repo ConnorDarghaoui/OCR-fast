@@ -1,12 +1,7 @@
-//! Motor OCR unificado basado en ONNX.
-//!
-//! Orquesta los 5 modelos ONNX para implementar el pipeline completo:
-//! Orientacion -> Layout -> Text Detection -> Text Recognition -> Tables.
-
 use crate::domain::errors::{LayoutError, OcrError};
 use crate::domain::{Block, BlockType, Document, Page, ProcessingProfile, Rectangle};
-use crate::infrastructure::ocr_engines::onnx::layout::DocLayoutYoloEngine;
 use crate::infrastructure::ocr_engines::onnx::gpu_config;
+use crate::infrastructure::ocr_engines::onnx::layout::DocLayoutYoloEngine;
 use crate::infrastructure::ocr_engines::onnx::model_downloader::ModelDownloader;
 use crate::infrastructure::ocr_engines::onnx::orientation::OrientationDetector;
 use crate::infrastructure::ocr_engines::onnx::table_analyzer::TableAnalyzer;
@@ -16,7 +11,18 @@ use crate::interfaces::ports::{LayoutEnginePort, OcrEnginePort};
 use image::{DynamicImage, GenericImageView};
 use std::path::PathBuf;
 
-/// Motor OCR completo basado en modelos ONNX.
+/// Engine OCR multi-etapa respaldado por un conjunto coordinado de modelos ONNX.
+///
+/// La implementación integra orientación, layout, detección de texto,
+/// reconocimiento y tablas bajo una sola fachada del puerto `OcrEnginePort`.
+/// Eso reduce acoplamiento en la capa de aplicación y permite optimizar la
+/// comunicación entre submodelos sin exponer sus detalles a la TUI.
+///
+/// # Concurrency
+///
+/// Cada subengine protege su `Session` con `Mutex` porque ONNX Runtime se usa a
+/// través de referencias compartidas en workers. La elección favorece seguridad y
+/// simplicidad sobre paralelismo fino dentro de una misma instancia.
 pub struct OnnxOcrEngine {
     orientacion: OrientationDetector,
     layout: DocLayoutYoloEngine,
@@ -26,55 +32,76 @@ pub struct OnnxOcrEngine {
 }
 
 impl OnnxOcrEngine {
-    /// Crea un nuevo motor OCR ONNX, descargando modelos si es necesario.
+    /// Construye el engine ONNX completo resolviendo GPU y modelos requeridos.
+    ///
+    /// # Errors
+    ///
+    /// Falla si la adquisición de modelos o la carga de cualquiera de los
+    /// submodelos no puede completarse de forma consistente.
     pub fn new() -> Result<Self, OcrError> {
         // Inicializar GPU una vez; cae a CPU si no hay EP disponible
         let _estado_gpu = gpu_config::inicializar(0);
 
-        let downloader = ModelDownloader::new()
-            .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
+        let downloader =
+            ModelDownloader::new().map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
-        let ruta_modelos = downloader.asegurar_todos_los_modelos(None, None)
+        let ruta_modelos = downloader
+            .asegurar_todos_los_modelos(None, None)
             .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
         Self::from_directory(&ruta_modelos)
     }
 
-    /// Crea el motor desde un directorio de modelos existente.
+    /// Construye el engine a partir de un directorio de modelos ya materializado.
+    ///
+    /// # Trade-offs
+    ///
+    /// Recibir una ruta explícita separa bootstrap de artefactos de bootstrap de
+    /// sesiones, lo que facilita tests y empaquetado offline.
     pub fn from_directory(ruta_modelos: &PathBuf) -> Result<Self, OcrError> {
         log::info!("Cargando modelos ONNX desde: {:?}", ruta_modelos);
 
-        let orientacion = OrientationDetector::new(
-            &ruta_modelos.join("orientation/PP-LCNet_x1_0_doc_ori.onnx"),
-        ).map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
+        let orientacion =
+            OrientationDetector::new(&ruta_modelos.join("orientation/PP-LCNet_x1_0_doc_ori.onnx"))
+                .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
         let layout = DocLayoutYoloEngine::new(
             &ruta_modelos.join("layout/doclayout_yolo_docstructbench_imgsz1024.onnx"),
-        ).map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
+        )
+        .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
-        let texto_det = TextDetector::new(
-            &ruta_modelos.join("ocr/det.onnx"),
-        ).map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
+        let texto_det = TextDetector::new(&ruta_modelos.join("ocr/det.onnx"))
+            .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
         let texto_rec = TextRecognizer::new(
             &ruta_modelos.join("ocr/rec.onnx"),
             &ruta_modelos.join("ocr/dict.txt"),
-        ).map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
+        )
+        .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
-        let tablas = TableAnalyzer::new(
-            &ruta_modelos.join("table/model_uint8.onnx"),
-        ).map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
+        let tablas = TableAnalyzer::new(&ruta_modelos.join("table/model_uint8.onnx"))
+            .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
         log::info!("Todos los modelos ONNX cargados exitosamente");
 
-        Ok(Self { orientacion, layout, texto_det, texto_rec, tablas })
+        Ok(Self {
+            orientacion,
+            layout,
+            texto_det,
+            texto_rec,
+            tablas,
+        })
     }
 
     /// Procesa una pagina individual aplicando el perfil de procesamiento.
-    fn procesar_pagina(&self, imagen: &DynamicImage, profile: &ProcessingProfile) -> Result<Vec<Block>, OcrError> {
+    fn procesar_pagina(
+        &self,
+        imagen: &DynamicImage,
+        profile: &ProcessingProfile,
+    ) -> Result<Vec<Block>, OcrError> {
         // Determinar umbrales segun perfil
         let (umbral_conf, umbral_nms, umbral_bin, tam_min): (f32, f32, f32, u32) = match profile {
-            ProcessingProfile::Fast     => (0.25, 0.50, 0.35, 8),
+            ProcessingProfile::Fast => (0.25, 0.50, 0.35, 8),
             ProcessingProfile::Balanced => (0.30, 0.45, 0.30, 5),
             ProcessingProfile::Accurate => (0.40, 0.35, 0.25, 3),
         };
@@ -85,12 +112,16 @@ impl OnnxOcrEngine {
                 log::debug!("Fast profile: omitiendo correccion de orientacion");
                 imagen.clone()
             }
-            _ => self.orientacion.corregir(imagen)
+            _ => self
+                .orientacion
+                .corregir(imagen)
                 .map_err(|e| OcrError::RecognitionError(e.to_string()))?,
         };
 
         // Layout con umbrales del perfil
-        let mut bloques = self.layout.analizar_imagen_con_umbrales(&imagen_corregida, umbral_conf, umbral_nms)
+        let mut bloques = self
+            .layout
+            .analizar_imagen_con_umbrales(&imagen_corregida, umbral_conf, umbral_nms)
             .map_err(|e| OcrError::RecognitionError(e.to_string()))?;
 
         // Procesar cada bloque segun su tipo
@@ -119,19 +150,29 @@ impl OnnxOcrEngine {
     ///
     /// Todos los recortes de linea se procesan en una sola llamada al modelo de
     /// reconocimiento, reduciendo el overhead de despacho especialmente en GPU.
-    fn procesar_bloque_texto(&self, imagen: &DynamicImage, bloque: &mut Block, umbral_bin: f32, tam_min: u32) {
+    fn procesar_bloque_texto(
+        &self,
+        imagen: &DynamicImage,
+        bloque: &mut Block,
+        umbral_bin: f32,
+        tam_min: u32,
+    ) {
         let recorte = match self.recortar_region(imagen, &bloque.bounding_box) {
             Some(img) => img,
             None => return,
         };
 
         // Detectar lineas de texto con umbrales del perfil; si no hay regiones, el bloque completo es la unica entrada.
-        let regiones = self.texto_det.detectar_con_umbrales(&recorte, umbral_bin, tam_min).unwrap_or_default();
+        let regiones = self
+            .texto_det
+            .detectar_con_umbrales(&recorte, umbral_bin, tam_min)
+            .unwrap_or_default();
 
         let recortes_linea: Vec<DynamicImage> = if regiones.is_empty() {
             vec![recorte]
         } else {
-            regiones.iter()
+            regiones
+                .iter()
                 .filter_map(|r| self.recortar_region(&recorte, r))
                 .collect()
         };
@@ -162,7 +203,11 @@ impl OnnxOcrEngine {
         }
 
         bloque.content = lineas.join("\n");
-        bloque.confidence = if conteo > 0 { confianza_total / conteo as f64 } else { 0.0 };
+        bloque.confidence = if conteo > 0 {
+            confianza_total / conteo as f64
+        } else {
+            0.0
+        };
     }
 
     /// Analiza estructura y contenido de una tabla.
@@ -177,7 +222,8 @@ impl OnnxOcrEngine {
                 // OCR sobre cada celda
                 for fila in &mut estructura.rows {
                     for celda in fila {
-                        if let Some(celda_img) = self.recortar_region(&recorte, &celda.bounding_box) {
+                        if let Some(celda_img) = self.recortar_region(&recorte, &celda.bounding_box)
+                        {
                             if let Ok(res) = self.texto_rec.reconocer(&celda_img) {
                                 celda.content = res.texto;
                             }
@@ -196,7 +242,10 @@ impl OnnxOcrEngine {
     fn extraer_imagen_embebida(&self, imagen: &DynamicImage, bloque: &mut Block) {
         if let Some(recorte) = self.recortar_region(imagen, &bloque.bounding_box) {
             let mut buffer = std::io::Cursor::new(Vec::new());
-            if recorte.write_to(&mut buffer, image::ImageFormat::Png).is_ok() {
+            if recorte
+                .write_to(&mut buffer, image::ImageFormat::Png)
+                .is_ok()
+            {
                 bloque.embedded_image = Some(buffer.into_inner());
             }
         }
@@ -206,22 +255,34 @@ impl OnnxOcrEngine {
     fn recortar_region(&self, imagen: &DynamicImage, rect: &Rectangle) -> Option<DynamicImage> {
         let (ancho_img, alto_img) = imagen.dimensions();
 
-        if rect.x >= ancho_img || rect.y >= alto_img { return None; }
+        if rect.x >= ancho_img || rect.y >= alto_img {
+            return None;
+        }
 
         let x = rect.x.min(ancho_img - 1);
         let y = rect.y.min(alto_img - 1);
         let ancho = rect.width.min(ancho_img - x);
         let alto = rect.height.min(alto_img - y);
 
-        if ancho < 2 || alto < 2 { return None; }
+        if ancho < 2 || alto < 2 {
+            return None;
+        }
 
         Some(imagen.crop_imm(x, y, ancho, alto))
     }
 }
 
 impl OcrEnginePort for OnnxOcrEngine {
-    fn process(&self, document: &mut Document, profile: &ProcessingProfile) -> Result<(), OcrError> {
-        log::info!("OnnxOcrEngine: procesando {} paginas con perfil {:?}", document.pages.len(), profile);
+    fn process(
+        &self,
+        document: &mut Document,
+        profile: &ProcessingProfile,
+    ) -> Result<(), OcrError> {
+        log::info!(
+            "OnnxOcrEngine: procesando {} paginas con perfil {:?}",
+            document.pages.len(),
+            profile
+        );
 
         for pagina in &mut document.pages {
             let imagen = match &pagina.image_data {
@@ -241,9 +302,13 @@ impl OcrEnginePort for OnnxOcrEngine {
         Ok(())
     }
 
-    fn name(&self) -> &str { "OnnxOcrEngine" }
+    fn name(&self) -> &str {
+        "OnnxOcrEngine"
+    }
 
-    fn provides_layout(&self) -> bool { true }
+    fn provides_layout(&self) -> bool {
+        true
+    }
 }
 
 impl LayoutEnginePort for OnnxOcrEngine {
@@ -257,5 +322,7 @@ impl LayoutEnginePort for OnnxOcrEngine {
         self.layout.analizar_imagen(&imagen)
     }
 
-    fn name(&self) -> &str { "OnnxLayoutEngine" }
+    fn name(&self) -> &str {
+        "OnnxLayoutEngine"
+    }
 }

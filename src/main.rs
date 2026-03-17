@@ -1,8 +1,3 @@
-//! Punto de entrada de la aplicacion OCRFast TUI.
-//!
-//! Inicializa dependencias e inicia la Terminal User Interface.
-//! Usa OnnxOcrEngine por defecto; con --stub usa implementaciones ficticias.
-
 use ocrfast::application::tui;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
 use ocrfast::infrastructure::job_store::FileJobStore;
@@ -31,9 +26,10 @@ fn configurar_logging() {
         })
         .level(log::LevelFilter::Info)
         .chain(std::io::stderr())
-        .chain(fern::log_file(&ruta_log).unwrap_or_else(|_| {
-            fern::log_file(std::path::Path::new("/dev/null")).unwrap()
-        }))
+        .chain(
+            fern::log_file(&ruta_log)
+                .unwrap_or_else(|_| fern::log_file(std::path::Path::new("/dev/null")).unwrap()),
+        )
         .apply();
 
     if let Err(e) = resultado_log {
@@ -66,7 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(store)
         }
         Err(e) => {
-            log::warn!("No se pudo inicializar FileJobStore ({}). Usando almacen en memoria.", e);
+            log::warn!(
+                "No se pudo inicializar FileJobStore ({}). Usando almacen en memoria.",
+                e
+            );
             use ocrfast::infrastructure::job_store::InMemoryJobStore;
             Arc::new(InMemoryJobStore::new())
         }

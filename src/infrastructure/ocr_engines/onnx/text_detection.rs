@@ -1,8 +1,3 @@
-//! Deteccion de texto usando PaddleOCR v5 (modelo DB).
-//!
-//! Detecta regiones de texto en una imagen y retorna bounding boxes
-//! de lineas de texto individuales.
-
 use crate::domain::Rectangle;
 use crate::infrastructure::ocr_engines::onnx::preprocessing;
 use image::{DynamicImage, GenericImageView};
@@ -24,7 +19,11 @@ const TAMANO_MINIMO_CAJA_DEFAULT: u32 = 5;
 /// consideran en la misma fila y se ordenan de izquierda a derecha.
 const BANDA_AGRUPACION_FILAS: u32 = 20;
 
-/// Detector de texto basado en PaddleOCR v5 DB.
+/// Detector de líneas de texto basado en PaddleOCR DB.
+///
+/// El modelo produce un mapa de probabilidad y la postsegmentación local extrae
+/// bounding boxes conectados. El enfoque separa inferencia densa de extracción de
+/// regiones, lo que permite afinar umbrales por perfil sin recompilar el modelo.
 pub struct TextDetector {
     sesion: Mutex<Session>,
     umbral_binarizacion: f32,
@@ -32,7 +31,7 @@ pub struct TextDetector {
 }
 
 impl TextDetector {
-    /// Carga el modelo PaddleOCR DB desde la ruta indicada.
+    /// Carga el detector DB desde disco y prepara la sesión ONNX.
     pub fn new(ruta_modelo: &Path) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let sesion = Session::builder()
             .and_then(|b| b.with_intra_threads(4))
@@ -49,7 +48,7 @@ impl TextDetector {
         })
     }
 
-    /// Detecta regiones de texto en una imagen.
+    /// Detecta regiones de texto con los umbrales configurados por defecto.
     pub fn detectar(
         &self,
         imagen: &DynamicImage,
@@ -57,7 +56,12 @@ impl TextDetector {
         self.detectar_con_umbrales(imagen, self.umbral_binarizacion, self.tamano_minimo_caja)
     }
 
-    /// Detecta regiones de texto con umbrales explicitos para ajuste por perfil de procesamiento.
+    /// Detecta regiones de texto con umbrales explícitos.
+    ///
+    /// # Trade-offs
+    ///
+    /// Exponer umbrales en la API pública permite perfiles de calidad/latencia,
+    /// pero aumenta la responsabilidad del caller sobre tuning.
     pub fn detectar_con_umbrales(
         &self,
         imagen: &DynamicImage,
@@ -75,14 +79,22 @@ impl TextDetector {
 
         let input_tensor = Tensor::from_array((forma_i64, datos_flat))?;
 
-        let mut sesion = self.sesion.lock()
+        let mut sesion = self
+            .sesion
+            .lock()
             .map_err(|e| format!("Mutex poisoned: {}", e))?;
-        let salidas = sesion.run(ort::inputs![input_tensor])
+        let salidas = sesion
+            .run(ort::inputs![input_tensor])
             .map_err(|e| format!("Error inferencia: {}", e))?;
 
         let (_forma, datos) = salidas[0].try_extract_tensor::<f32>()?;
 
-        let mapa_binario = self.binarizar_mapa(datos, ancho_input as usize, alto_input as usize, umbral_binarizacion);
+        let mapa_binario = self.binarizar_mapa(
+            datos,
+            ancho_input as usize,
+            alto_input as usize,
+            umbral_binarizacion,
+        );
         let cajas = self.encontrar_cajas(&mapa_binario, ancho_input, alto_input, tamano_minimo);
 
         let escala_x = ancho_original as f32 / ancho_input as f32;
@@ -102,7 +114,11 @@ impl TextDetector {
         resultados.sort_by(|a, b| {
             let fila_a = a.y / BANDA_AGRUPACION_FILAS;
             let fila_b = b.y / BANDA_AGRUPACION_FILAS;
-            if fila_a == fila_b { a.x.cmp(&b.x) } else { a.y.cmp(&b.y) }
+            if fila_a == fila_b {
+                a.x.cmp(&b.x)
+            } else {
+                a.y.cmp(&b.y)
+            }
         });
 
         log::info!("PaddleOCR detecto {} regiones de texto", resultados.len());
@@ -110,13 +126,20 @@ impl TextDetector {
     }
 
     fn binarizar_mapa(&self, datos: &[f32], ancho: usize, alto: usize, umbral: f32) -> Vec<u8> {
-        datos.iter()
+        datos
+            .iter()
             .take(ancho * alto)
             .map(|&v| if v > umbral { 255 } else { 0 })
             .collect()
     }
 
-    fn encontrar_cajas(&self, mapa: &[u8], ancho: u32, alto: u32, tamano_minimo: u32) -> Vec<(u32, u32, u32, u32)> {
+    fn encontrar_cajas(
+        &self,
+        mapa: &[u8],
+        ancho: u32,
+        alto: u32,
+        tamano_minimo: u32,
+    ) -> Vec<(u32, u32, u32, u32)> {
         let mut visitado = vec![false; (ancho * alto) as usize];
         let mut cajas = Vec::new();
 
@@ -141,8 +164,13 @@ impl TextDetector {
     }
 
     fn flood_fill(
-        &self, mapa: &[u8], visitado: &mut [bool],
-        inicio_x: u32, inicio_y: u32, ancho: u32, alto: u32,
+        &self,
+        mapa: &[u8],
+        visitado: &mut [bool],
+        inicio_x: u32,
+        inicio_y: u32,
+        ancho: u32,
+        alto: u32,
     ) -> (u32, u32, u32, u32) {
         let mut pila = vec![(inicio_x, inicio_y)];
         let (mut min_x, mut min_y) = (inicio_x, inicio_y);
@@ -160,10 +188,18 @@ impl TextDetector {
             max_x = max_x.max(x);
             max_y = max_y.max(y);
 
-            if x > 0 { pila.push((x - 1, y)); }
-            if x + 1 < ancho { pila.push((x + 1, y)); }
-            if y > 0 { pila.push((x, y - 1)); }
-            if y + 1 < alto { pila.push((x, y + 1)); }
+            if x > 0 {
+                pila.push((x - 1, y));
+            }
+            if x + 1 < ancho {
+                pila.push((x + 1, y));
+            }
+            if y > 0 {
+                pila.push((x, y - 1));
+            }
+            if y + 1 < alto {
+                pila.push((x, y + 1));
+            }
         }
 
         (min_x, min_y, max_x, max_y)

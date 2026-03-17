@@ -1,32 +1,29 @@
-//! Decodificador CTC (Connectionist Temporal Classification) para PaddleOCR.
-//!
-//! La salida del modelo de reconocimiento PaddleOCR es una secuencia
-//! de probabilidades por caracter. Este modulo convierte esa secuencia
-//! en texto legible usando el diccionario de caracteres (dict.txt).
-
 use std::fs;
 use std::path::Path;
 
-/// Carga el diccionario de caracteres desde dict.txt.
+/// Carga el vocabulario CTC desde el archivo `dict.txt`.
 ///
-/// Cada linea del archivo contiene un caracter.
-/// El indice 0 se reserva para el token "blank" de CTC.
+/// El índice cero se reserva para el token blank, por lo que el archivo solo
+/// contiene símbolos efectivos del vocabulario.
 pub fn cargar_diccionario(ruta: &Path) -> Result<Vec<String>, std::io::Error> {
     let contenido = fs::read_to_string(ruta)?;
-    let diccionario: Vec<String> = contenido
-        .lines()
-        .map(|linea| linea.to_string())
-        .collect();
+    let diccionario: Vec<String> = contenido.lines().map(|linea| linea.to_string()).collect();
 
     log::info!("Diccionario cargado: {} caracteres", diccionario.len());
     Ok(diccionario)
 }
 
-/// Decodifica la salida CTC del modelo de reconocimiento con algoritmo greedy.
+/// Decodifica logits CTC usando greedy decoding clásico.
 ///
-/// La salida tiene shape `[1, T, C]` donde T = timesteps y C = clases.
-/// Greedy: argmax por timestep, eliminar blanks (indice 0) y repetidos consecutivos.
-pub fn decodificar_ctc(predicciones: &[f32], tamano_vocabulario: usize, diccionario: &[String]) -> String {
+/// # Trade-offs
+///
+/// El algoritmo greedy es muy barato y suficiente para OCR latino generalista,
+/// pero renuncia a mejoras potenciales de beam search en casos ambiguos.
+pub fn decodificar_ctc(
+    predicciones: &[f32],
+    tamano_vocabulario: usize,
+    diccionario: &[String],
+) -> String {
     let mut resultado = String::new();
     let mut indice_anterior: usize = 0; // 0 = blank token
 
@@ -58,9 +55,11 @@ pub fn decodificar_ctc(predicciones: &[f32], tamano_vocabulario: usize, dicciona
     resultado
 }
 
-/// Decodifica la salida CTC con nivel de confianza.
+/// Decodifica logits CTC y calcula una confianza promedio por carácter emitido.
 ///
-/// Retorna el texto y la confianza promedio de los caracteres decodificados.
+/// La confianza se computa sobre caracteres efectivamente retenidos tras las
+/// reglas CTC, lo que la vuelve más útil para ranking de resultados que una media
+/// cruda sobre todos los timesteps.
 pub fn decodificar_ctc_con_confianza(
     predicciones: &[f32],
     tamano_vocabulario: usize,
@@ -123,16 +122,11 @@ mod tests {
         // Secuencia esperada: blank, h, o, l, a, blank -> "hola"
         let predicciones = vec![
             // timestep 0: blank (indice 0)
-            1.0, 0.0, 0.0, 0.0, 0.0,
-            // timestep 1: h (indice 1)
-            0.0, 1.0, 0.0, 0.0, 0.0,
-            // timestep 2: o (indice 2)
-            0.0, 0.0, 1.0, 0.0, 0.0,
-            // timestep 3: l (indice 3)
-            0.0, 0.0, 0.0, 1.0, 0.0,
-            // timestep 4: a (indice 4)
-            0.0, 0.0, 0.0, 0.0, 1.0,
-            // timestep 5: blank
+            1.0, 0.0, 0.0, 0.0, 0.0, // timestep 1: h (indice 1)
+            0.0, 1.0, 0.0, 0.0, 0.0, // timestep 2: o (indice 2)
+            0.0, 0.0, 1.0, 0.0, 0.0, // timestep 3: l (indice 3)
+            0.0, 0.0, 0.0, 1.0, 0.0, // timestep 4: a (indice 4)
+            0.0, 0.0, 0.0, 0.0, 1.0, // timestep 5: blank
             1.0, 0.0, 0.0, 0.0, 0.0,
         ];
 

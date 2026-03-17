@@ -24,6 +24,8 @@ Sistema OCR (Reconocimiento Óptico de Caracteres) local-first implementado en R
 
 ### Compilar desde código fuente
 
+Este flujo puede descargar dependencias nativas y modelos si no existen localmente.
+
 ```bash
 # Clonar el repositorio
 git clone <repo-url>
@@ -46,6 +48,8 @@ cargo run
 # O ejecutar el binario directamente
 ./target/release/ocrfast
 ```
+
+Los modelos ONNX se descargan automáticamente si no existen localmente.
 
 ### Controles de la interfaz TUI
 

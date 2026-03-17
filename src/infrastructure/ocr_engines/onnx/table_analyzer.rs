@@ -1,8 +1,3 @@
-//! Analizador de estructura de tablas usando Table Transformer (DETR).
-//!
-//! Detecta filas, columnas y celdas dentro de regiones de tabla
-//! previamente identificadas por el motor de layout.
-
 use crate::domain::{Rectangle, TableCell, TableStructure};
 use crate::infrastructure::ocr_engines::onnx::preprocessing;
 use image::{DynamicImage, GenericImageView};
@@ -11,7 +6,11 @@ use ort::value::Tensor;
 use std::path::Path;
 use std::sync::Mutex;
 
-/// Analizador de tablas basado en Table Transformer (DETR).
+/// Analizador de estructura tabular basado en Table Transformer.
+///
+/// El componente asume que la región ya fue aislada por layout; su responsabilidad
+/// es reconstruir filas y columnas internas. Esa separación reduce falsos
+/// positivos y evita ejecutar un detector caro sobre la página completa.
 pub struct TableAnalyzer {
     sesion: Mutex<Session>,
     umbral_confianza: f32,
@@ -26,7 +25,7 @@ struct ComponenteTabla {
 }
 
 impl TableAnalyzer {
-    /// Carga el modelo Table Transformer desde la ruta indicada.
+    /// Carga el modelo Table Transformer desde disco.
     pub fn new(ruta_modelo: &Path) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let sesion = Session::builder()
             .and_then(|b| b.with_intra_threads(2))
@@ -42,7 +41,7 @@ impl TableAnalyzer {
         })
     }
 
-    /// Analiza la estructura de una tabla desde su recorte de imagen.
+    /// Analiza la estructura de una tabla a partir de un recorte ya localizado.
     pub fn analizar(
         &self,
         recorte_tabla: &DynamicImage,
@@ -55,15 +54,13 @@ impl TableAnalyzer {
 
         let input_tensor = Tensor::from_array((forma, datos_flat))?;
 
-        let mut sesion = self.sesion.lock()
+        let mut sesion = self
+            .sesion
+            .lock()
             .map_err(|e| format!("Mutex poisoned: {}", e))?;
         let salidas = sesion.run(ort::inputs![input_tensor])?;
 
-        let componentes = self.parsear_salida_detr(
-            &salidas,
-            ancho_original,
-            alto_original,
-        )?;
+        let componentes = self.parsear_salida_detr(&salidas, ancho_original, alto_original)?;
 
         let filas: Vec<&ComponenteTabla> = componentes.iter().filter(|c| c.clase == 2).collect();
         let columnas: Vec<&ComponenteTabla> = componentes.iter().filter(|c| c.clase == 1).collect();

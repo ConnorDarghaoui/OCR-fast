@@ -1,8 +1,5 @@
-//! Módulo de interfaces: Definición de puertos y contratos
-//! 
-//! Contiene las abstracciones (traits) que definen los puertos del sistema
-//! según el patrón de Clean Architecture
-
+/// Puertos del sistema usados para inversión de dependencias entre capas.
 pub mod ports;
 
+/// Reexporta los contratos públicos para simplificar imports externos.
 pub use ports::*;

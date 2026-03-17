@@ -1,12 +1,16 @@
-//! Modulo de errores tipados del sistema OCR
-//!
-//! Define los tipos de error para cada capa siguiendo un enfoque estructurado
-//! que facilita el manejo y la propagacion de errores a traves del sistema.
-
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Errores relacionados con la ingesta y parseo de documentos.
+/// Errores recuperables durante ingesta y decodificación de documentos.
+///
+/// Se mantiene separado del resto del árbol para que la capa de aplicación pueda
+/// distinguir fallos de input del usuario frente a errores de OCR o persistencia.
+///
+/// # Trade-offs
+///
+/// El enum privilegia clasificación operacional clara sobre granularidad extrema.
+/// Detalles de librerías subyacentes se encapsulan en `String` para no filtrar
+/// dependencias externas al dominio.
 #[derive(Error, Debug)]
 pub enum DocumentError {
     /// El archivo no existe en la ruta especificada.
@@ -30,7 +34,11 @@ pub enum DocumentError {
     ImageError(String),
 }
 
-/// Errores relacionados con el motor OCR.
+/// Errores asociados a inicialización y ejecución del engine OCR.
+///
+/// Este enum separa indisponibilidad temporal (`NotReady`) de fallo estructural
+/// (`NotInitialized` o `ModelLoadError`) para que la UI pueda decidir entre
+/// reintento, backoff o degradación funcional sin inspeccionar mensajes libres.
 #[derive(Error, Debug)]
 pub enum OcrError {
     /// El motor OCR no esta inicializado correctamente.
@@ -58,7 +66,7 @@ pub enum OcrError {
     ModelLoadError(String),
 }
 
-/// Errores relacionados con el analisis de layout.
+/// Errores producidos por segmentación geométrica y análisis de layout.
 #[derive(Error, Debug)]
 pub enum LayoutError {
     /// Error durante la segmentacion de bloques.
@@ -70,7 +78,10 @@ pub enum LayoutError {
     InvalidImage(String),
 }
 
-/// Errores relacionados con la exportacion de resultados.
+/// Errores producidos al materializar un resultado OCR.
+///
+/// Exportación se modela por separado porque su semántica operacional es distinta:
+/// un fallo aquí no invalida el OCR ya calculado, solo su persistencia final.
 #[derive(Error, Debug)]
 pub enum ExportError {
     /// Error al escribir el archivo de salida.
@@ -86,7 +97,11 @@ pub enum ExportError {
     UnsupportedFormat(String),
 }
 
-/// Errores relacionados con el almacenamiento de trabajos.
+/// Errores de persistencia y coordinación en el almacén de trabajos.
+///
+/// La presencia de `LockError` visibiliza que el storage puede operar en contextos
+/// concurrentes y evita colapsar errores lógicos y de sincronización en una misma
+/// categoría opaca.
 #[derive(Error, Debug)]
 pub enum JobStoreError {
     /// El trabajo no fue encontrado.
@@ -102,7 +117,7 @@ pub enum JobStoreError {
     PersistenceError(String),
 }
 
-/// Errores relacionados con preprocesamiento de imagenes.
+/// Errores de transformaciones previas al OCR sobre imágenes raster.
 #[derive(Error, Debug)]
 pub enum PreprocessError {
     /// Error durante binarizacion.
@@ -118,7 +133,11 @@ pub enum PreprocessError {
     DenoiseError(String),
 }
 
-/// Errores relacionados con descarga y gestion de modelos ONNX.
+/// Errores de adquisición, validación y localización de modelos ONNX.
+///
+/// La capa de modelos es una frontera de I/O, red e integridad, por lo que
+/// necesita distinguir fallos transitorios (`NetworkError`) de corrupción dura
+/// (`IntegrityError`) y de misconfiguración local (`DirectoryError`).
 #[derive(Error, Debug)]
 pub enum ModelDownloadError {
     /// Error de red al descargar un modelo.
@@ -135,17 +154,14 @@ pub enum ModelDownloadError {
 
     /// Error de integridad (checksum no coincide).
     #[error("error de integridad: esperado {expected}, obtenido {actual}")]
-    IntegrityError {
-        expected: String,
-        actual: String,
-    },
+    IntegrityError { expected: String, actual: String },
 
     /// Directorio de modelos no accesible.
     #[error("directorio de modelos no accesible: {0}")]
     DirectoryError(String),
 }
 
-/// Errores relacionados con deteccion de orientacion.
+/// Errores emitidos por el subpipeline de orientación de documento.
 #[derive(Error, Debug)]
 pub enum OrientationError {
     /// Error al detectar la orientacion.
@@ -157,7 +173,16 @@ pub enum OrientationError {
     InvalidImage(String),
 }
 
-/// Error unificado del sistema OCR.
+/// Error raíz del crate para composición entre capas.
+///
+/// `OcrFastError` unifica fronteras de fallo sin sacrificar tipado específico en
+/// cada submódulo. La estrategia basada en `From` permite propagación idiomática
+/// con `?` y mantiene observabilidad estructurada al nivel de capa.
+///
+/// # Trade-offs
+///
+/// Un error raíz reduce fricción en APIs de alto nivel, pero puede esconder
+/// matices si el caller no hace matching explícito sobre sus variantes.
 #[derive(Error, Debug)]
 pub enum OcrFastError {
     #[error(transparent)]
@@ -185,5 +210,10 @@ pub enum OcrFastError {
     Orientation(#[from] OrientationError),
 }
 
-/// Alias conveniente para resultados del sistema.
+/// Alias estándar para resultados públicos del crate.
+///
+/// # Notes
+///
+/// El alias reduce ruido en firmas de alto nivel y hace explícito que el crate
+/// expone un error raíz estable para integración externa.
 pub type Result<T> = std::result::Result<T, OcrFastError>;

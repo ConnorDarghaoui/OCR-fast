@@ -1,17 +1,23 @@
-//! Renderizado de widgets usando ratatui - Estetica Estacion de Trabajo.
-//!
-//! Layout basado en paneles (Sidebar, Main, Logs) inspirado en Rebels in the Sky.
-
 use super::app_state::{AppState, InputMode, ViewMode};
 use crate::domain::{JobStatus, OutputFormat, ProcessingProfile};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Clear},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
+/// Renderiza un frame completo a partir del `AppState` actual.
+///
+/// La función es deliberadamente pura respecto al estado visible: no muta la
+/// aplicación y solo traduce datos a widgets. Esa separación hace que el render
+/// sea testeable por snapshot y evita que lógica de negocio se mezcle con layout.
+///
+/// # Performance
+///
+/// El frame se compone con layouts deterministas y sin asignaciones de gran
+/// volumen por tick, manteniendo estable el coste del redraw.
 pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
     // Determinar si hay mensaje flash activo y/o motor degradado (stub)
     let hay_flash = aplicacion.obtener_estado().is_some();
@@ -21,9 +27,9 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
     let alto_banner_motor: u16 = if motor_degradado { 1 } else { 0 };
 
     let mut constraints = vec![
-        Constraint::Length(3),                  // Encabezado pestanas
-        Constraint::Length(alto_banner_motor),  // Banner motor_fallido (0 o 1)
-        Constraint::Min(0),                     // Centro
+        Constraint::Length(3),                 // Encabezado pestanas
+        Constraint::Length(alto_banner_motor), // Banner motor_fallido (0 o 1)
+        Constraint::Min(0),                    // Centro
     ];
     if hay_flash {
         constraints.push(Constraint::Length(1)); // Barra de estado flash
@@ -37,9 +43,9 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
 
     // Indices dinamicos segun flags
     let idx_banner_motor = 1usize;
-    let idx_centro      = 2usize;
-    let idx_flash       = if hay_flash { Some(3usize) } else { None };
-    let idx_logs        = if hay_flash { 4usize } else { 3usize };
+    let idx_centro = 2usize;
+    let idx_flash = if hay_flash { Some(3usize) } else { None };
+    let idx_logs = if hay_flash { 4usize } else { 3usize };
 
     // Encabezado con pestanas
     renderizar_pestanas_encabezado(marco, aplicacion, layout_principal[0]);
@@ -70,7 +76,9 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
 
     match aplicacion.vista_actual {
         ViewMode::Initializing => renderizar_inicializacion(marco, aplicacion, layout_central[1]),
-        ViewMode::JobList | ViewMode::JobDetail => renderizar_contenido_principal(marco, aplicacion, layout_central[1]),
+        ViewMode::JobList | ViewMode::JobDetail => {
+            renderizar_contenido_principal(marco, aplicacion, layout_central[1])
+        }
         ViewMode::Settings => renderizar_configuracion(marco, aplicacion, layout_central[1]),
         ViewMode::Help => renderizar_ayuda(marco, layout_central[1]),
     }
@@ -82,7 +90,10 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
             let color = if es_error { Color::Red } else { Color::Green };
             let barra = Paragraph::new(Span::styled(
                 format!("  {}", msg),
-                Style::default().fg(Color::White).bg(color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .bg(color)
+                    .add_modifier(Modifier::BOLD),
             ));
             marco.render_widget(barra, layout_principal[flash_idx]);
         }
@@ -114,59 +125,86 @@ fn renderizar_pestanas_encabezado(marco: &mut Frame, aplicacion: &AppState, area
     };
 
     let pestanas = ratatui::widgets::Tabs::new(titulos)
-        .block(Block::default().borders(Borders::BOTTOM).title(" OCRFast │ Sistema de Datos Terminal "))
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .title(" OCRFast │ Sistema de Datos Terminal "),
+        )
         .select(indice)
         .style(Style::default().fg(Color::Cyan))
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
     marco.render_widget(pestanas, area);
 }
 
 /// Barra Lateral Izquierda: Monitor de trabajos
 fn renderizar_monitor_lateral(marco: &mut Frame, aplicacion: &AppState, area: Rect) {
-    let items: Vec<ListItem> = aplicacion.trabajos.iter().enumerate().map(|(i, trabajo)| {
-        let (etiqueta, color) = obtener_etiqueta_y_color_estado(trabajo.status);
-        let prefijo = if i == aplicacion.indice_seleccionado { "» " } else { "  " };
-        
-        let estilo = if i == aplicacion.indice_seleccionado {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
+    let items: Vec<ListItem> = aplicacion
+        .trabajos
+        .iter()
+        .enumerate()
+        .map(|(i, trabajo)| {
+            let (etiqueta, color) = obtener_etiqueta_y_color_estado(trabajo.status);
+            let prefijo = if i == aplicacion.indice_seleccionado {
+                "» "
+            } else {
+                "  "
+            };
 
-        let linea = Line::from(vec![
-            Span::styled(prefijo, estilo),
-            Span::styled(etiqueta, Style::default().fg(color)),
-            Span::raw(format!(" {}", &trabajo.id[..8])),
-        ]);
-        
-        ListItem::new(linea)
-    }).collect();
+            let estilo = if i == aplicacion.indice_seleccionado {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
 
-    let lista = List::new(items)
-        .block(Block::default()
+            let linea = Line::from(vec![
+                Span::styled(prefijo, estilo),
+                Span::styled(etiqueta, Style::default().fg(color)),
+                Span::raw(format!(" {}", &trabajo.id[..8])),
+            ]);
+
+            ListItem::new(linea)
+        })
+        .collect();
+
+    let lista = List::new(items).block(
+        Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Thick)
-            .title(" MONITOR "));
-    
+            .title(" MONITOR "),
+    );
+
     marco.render_widget(lista, area);
 }
 
 /// Panel Inferior: Registro de sistema
 fn renderizar_panel_registros(marco: &mut Frame, aplicacion: &AppState, area: Rect) {
-    let items_registros: Vec<ListItem> = aplicacion.registros.iter().rev().take(5).map(|reg| {
-        ListItem::new(Line::from(vec![
-            Span::styled("  SISTEMA › ", Style::default().fg(Color::DarkGray)),
-            Span::raw(reg),
-        ]))
-    }).collect();
+    let items_registros: Vec<ListItem> = aplicacion
+        .registros
+        .iter()
+        .rev()
+        .take(5)
+        .map(|reg| {
+            ListItem::new(Line::from(vec![
+                Span::styled("  SISTEMA › ", Style::default().fg(Color::DarkGray)),
+                Span::raw(reg),
+            ]))
+        })
+        .collect();
 
-    let lista_registros = List::new(items_registros)
-        .block(Block::default()
+    let lista_registros = List::new(items_registros).block(
+        Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Double)
-            .title(" REGISTRO_SISTEMA "));
-    
+            .title(" REGISTRO_SISTEMA "),
+    );
+
     marco.render_widget(lista_registros, area);
 }
 
@@ -175,9 +213,10 @@ fn renderizar_contenido_principal(marco: &mut Frame, aplicacion: &AppState, area
     let trabajo = match aplicacion.obtener_trabajo_seleccionado() {
         Some(t) => t,
         None => {
-            let parrafo = Paragraph::new("\n\n  ESPERANDO DATOS...\n\n  Presione 'n' para cargar archivo.")
-                .alignment(Alignment::Center)
-                .block(Block::default().borders(Borders::ALL).title(" TERMINAL "));
+            let parrafo =
+                Paragraph::new("\n\n  ESPERANDO DATOS...\n\n  Presione 'n' para cargar archivo.")
+                    .alignment(Alignment::Center)
+                    .block(Block::default().borders(Borders::ALL).title(" TERMINAL "));
             marco.render_widget(parrafo, area);
             return;
         }
@@ -194,77 +233,141 @@ fn renderizar_resumen_trabajo(marco: &mut Frame, trabajo: &crate::domain::Job, a
     let (etiqueta, color) = obtener_etiqueta_y_color_estado(trabajo.status);
 
     let mut texto = vec![
-        Line::from(vec![Span::styled(" ID_TRABAJO: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(&trabajo.id)]),
-        Line::from(vec![Span::styled(" ESTADO:      ", Style::default().add_modifier(Modifier::BOLD)), Span::styled(format!("{:?} {}", trabajo.status, etiqueta), Style::default().fg(color))]),
-        Line::from(vec![Span::styled(" ORIGEN:      ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(trabajo.document.source_path.to_string_lossy())]),
+        Line::from(vec![
+            Span::styled(
+                " ID_TRABAJO: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(&trabajo.id),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                " ESTADO:      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:?} {}", trabajo.status, etiqueta),
+                Style::default().fg(color),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                " ORIGEN:      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(trabajo.document.source_path.to_string_lossy()),
+        ]),
     ];
 
     if trabajo.status == JobStatus::Failed {
         if let Some(ref msg) = trabajo.error_message {
             texto.push(Line::from(vec![
-                Span::styled(" ERROR:       ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Red)),
+                Span::styled(
+                    " ERROR:       ",
+                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Red),
+                ),
                 Span::styled(msg.as_str(), Style::default().fg(Color::Red)),
             ]));
         }
     }
 
     texto.push(Line::from(""));
-    texto.push(Line::from("  Presione ENTER para inspeccionar bloques de datos."));
-    texto.push(Line::from("  Presione 'x' para eliminar. 'c' para limpiar finalizados."));
+    texto.push(Line::from(
+        "  Presione ENTER para inspeccionar bloques de datos.",
+    ));
+    texto.push(Line::from(
+        "  Presione 'x' para eliminar. 'c' para limpiar finalizados.",
+    ));
 
-    let parrafo = Paragraph::new(texto)
-        .block(Block::default().borders(Borders::ALL).title(" RESUMEN_DATOS "));
+    let parrafo = Paragraph::new(texto).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" RESUMEN_DATOS "),
+    );
     marco.render_widget(parrafo, area);
 }
 
-fn renderizar_detalle_trabajo_enmarcado(marco: &mut Frame, aplicacion: &AppState, trabajo: &crate::domain::Job, area: Rect) {
+fn renderizar_detalle_trabajo_enmarcado(
+    marco: &mut Frame,
+    aplicacion: &AppState,
+    trabajo: &crate::domain::Job,
+    area: Rect,
+) {
     let mut items_bloques = Vec::new();
 
     for pagina in &trabajo.document.pages {
-        items_bloques.push(ListItem::new(Line::from(Span::styled(format!("--- PAGINA {} ---", pagina.number), Style::default().fg(Color::Yellow)))));
+        items_bloques.push(ListItem::new(Line::from(Span::styled(
+            format!("--- PAGINA {} ---", pagina.number),
+            Style::default().fg(Color::Yellow),
+        ))));
         for bloque in &pagina.blocks {
-             let contenido = if bloque.content.len() > 100 { format!("{}...", &bloque.content[..97]) } else { bloque.content.clone() };
-             items_bloques.push(ListItem::new(format!("[{:?}] {}", bloque.block_type, contenido)));
+            let contenido = if bloque.content.len() > 100 {
+                format!("{}...", &bloque.content[..97])
+            } else {
+                bloque.content.clone()
+            };
+            items_bloques.push(ListItem::new(format!(
+                "[{:?}] {}",
+                bloque.block_type, contenido
+            )));
         }
     }
 
     if items_bloques.is_empty() {
         if trabajo.status == JobStatus::Failed {
-            let msg = trabajo.error_message.as_deref().unwrap_or("Error desconocido");
+            let msg = trabajo
+                .error_message
+                .as_deref()
+                .unwrap_or("Error desconocido");
             let parrafo = Paragraph::new(vec![
                 Line::from(""),
-                Line::from(Span::styled(" JOB FALLIDO", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled(
+                    " JOB FALLIDO",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )),
                 Line::from(""),
-                Line::from(Span::styled(format!(" {}", msg), Style::default().fg(Color::Red))),
+                Line::from(Span::styled(
+                    format!(" {}", msg),
+                    Style::default().fg(Color::Red),
+                )),
             ])
             .block(Block::default().borders(Borders::ALL).title(" ERROR "));
             marco.render_widget(parrafo, area);
             return;
         } else if trabajo.status == JobStatus::Processing {
-             let porcentaje = aplicacion.progreso_actual.get(&trabajo.id).copied().unwrap_or(0.0);
-             let fase = aplicacion.fase_actual.get(&trabajo.id).map(|s| s.as_str()).unwrap_or("Procesando...");
+            let porcentaje = aplicacion
+                .progreso_actual
+                .get(&trabajo.id)
+                .copied()
+                .unwrap_or(0.0);
+            let fase = aplicacion
+                .fase_actual
+                .get(&trabajo.id)
+                .map(|s| s.as_str())
+                .unwrap_or("Procesando...");
 
-             let indicador = ratatui::widgets::Gauge::default()
+            let indicador = ratatui::widgets::Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title(" PROCESANDO "))
                 .gauge_style(Style::default().fg(Color::Cyan))
                 .percent((porcentaje * 100.0) as u16)
                 .label(fase);
-             marco.render_widget(indicador, area);
-             return;
+            marco.render_widget(indicador, area);
+            return;
         } else {
-             items_bloques.push(ListItem::new("Sin contenido extraido"));
+            items_bloques.push(ListItem::new("Sin contenido extraido"));
         }
     }
 
     // Aplicar scroll si es necesario (simple slice handling para esta demo, o usar List state si fuera persistente)
     // Para simplificar y dado que List se maneja con ListState, aqui renderizamos todo pero permitimos que el widget corte.
     // Para scroll real necesitariamos pasar un ListState mutable. Por ahora usamos app.scroll_detalle como offset manual.
-    
+
     let saltar = aplicacion.scroll_detalle as usize;
     let items_visibles: Vec<ListItem> = items_bloques.into_iter().skip(saltar).collect();
 
-    let lista = List::new(items_visibles)
-        .block(Block::default().borders(Borders::ALL).title(format!(" BLOQUES (ID: {}) [m:MD j:JSON q:Volver]", &trabajo.id[..8])));
+    let lista = List::new(items_visibles).block(Block::default().borders(Borders::ALL).title(
+        format!(" BLOQUES (ID: {}) [m:MD j:JSON q:Volver]", &trabajo.id[..8]),
+    ));
     marco.render_widget(lista, area);
 }
 
@@ -281,8 +384,8 @@ fn renderizar_inicializacion(marco: &mut Frame, aplicacion: &AppState, area: Rec
         ])
         .split(area_centrada);
 
-    let mensaje = Paragraph::new("Descargando e inicializando modelos ONNX...")
-        .alignment(Alignment::Center);
+    let mensaje =
+        Paragraph::new("Descargando e inicializando modelos ONNX...").alignment(Alignment::Center);
     marco.render_widget(mensaje, secciones[0]);
 
     let segundos = std::time::SystemTime::now()
@@ -306,7 +409,11 @@ fn renderizar_inicializacion(marco: &mut Frame, aplicacion: &AppState, area: Rec
     };
 
     let indicador = ratatui::widgets::Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} CARGANDO ", spinner)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} CARGANDO ", spinner)),
+        )
         .gauge_style(Style::default().fg(Color::Cyan))
         .percent(porcentaje)
         .label(etiqueta.as_str());
@@ -337,44 +444,72 @@ fn renderizar_configuracion(marco: &mut Frame, aplicacion: &AppState, area: Rect
         Line::from(""),
         Line::from(Span::styled(
             " PERFIL_PROCESAMIENTO ",
-            Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::raw(if perfil_actual == ProcessingProfile::Fast { " › " } else { "   " }),
+            Span::raw(if perfil_actual == ProcessingProfile::Fast {
+                " › "
+            } else {
+                "   "
+            }),
             Span::styled("[1] ", Style::default().fg(Color::Yellow)),
             Span::raw("RAPIDO      - Prioridad velocidad"),
         ]),
         Line::from(vec![
-            Span::raw(if perfil_actual == ProcessingProfile::Balanced { " › " } else { "   " }),
+            Span::raw(if perfil_actual == ProcessingProfile::Balanced {
+                " › "
+            } else {
+                "   "
+            }),
             Span::styled("[2] ", Style::default().fg(Color::Yellow)),
             Span::raw("EQUILIBRADO - Por defecto"),
         ]),
         Line::from(vec![
-            Span::raw(if perfil_actual == ProcessingProfile::Accurate { " › " } else { "   " }),
+            Span::raw(if perfil_actual == ProcessingProfile::Accurate {
+                " › "
+            } else {
+                "   "
+            }),
             Span::styled("[3] ", Style::default().fg(Color::Yellow)),
             Span::raw("PRECISO     - Prioridad exactitud"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             " IDIOMA_OCR ",
-            Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::raw(if idioma_actual == "spa" { " › " } else { "   " }),
+            Span::raw(if idioma_actual == "spa" {
+                " › "
+            } else {
+                "   "
+            }),
             Span::styled("[4] ", Style::default().fg(Color::Yellow)),
             Span::raw("ESPANOL (spa)"),
         ]),
         Line::from(vec![
-            Span::raw(if idioma_actual == "eng" { " › " } else { "   " }),
+            Span::raw(if idioma_actual == "eng" {
+                " › "
+            } else {
+                "   "
+            }),
             Span::styled("[5] ", Style::default().fg(Color::Yellow)),
             Span::raw("INGLES  (eng)"),
         ]),
     ];
 
-    let parrafo_config = Paragraph::new(texto)
-        .block(Block::default().borders(Borders::ALL).border_type(ratatui::widgets::BorderType::Thick).title(" AJUSTES "));
+    let parrafo_config = Paragraph::new(texto).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Thick)
+            .title(" AJUSTES "),
+    );
     marco.render_widget(parrafo_config, area);
 }
 
@@ -384,7 +519,10 @@ fn renderizar_dialogo_entrada(marco: &mut Frame, aplicacion: &AppState) {
 
     let lineas = vec![
         Line::from(""),
-        Line::from(Span::styled(" RUTA_ARCHIVO: ", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            " RUTA_ARCHIVO: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(format!(" > {}_", aplicacion.buffer_entrada)),
         Line::from(""),
         Line::from(Span::styled(
@@ -393,8 +531,12 @@ fn renderizar_dialogo_entrada(marco: &mut Frame, aplicacion: &AppState) {
         )),
     ];
 
-    let entrada = Paragraph::new(lineas)
-        .block(Block::default().borders(Borders::ALL).border_type(ratatui::widgets::BorderType::Thick).title(" AGREGAR_ARCHIVO "));
+    let entrada = Paragraph::new(lineas).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Thick)
+            .title(" AGREGAR_ARCHIVO "),
+    );
 
     marco.render_widget(Clear, area_centrada);
     marco.render_widget(entrada, area_centrada);
@@ -404,46 +546,132 @@ fn renderizar_dialogo_entrada(marco: &mut Frame, aplicacion: &AppState) {
 fn renderizar_ayuda(marco: &mut Frame, area: Rect) {
     let texto = vec![
         Line::from(""),
-        Line::from(Span::styled(" NAVEGACION GENERAL ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Line::from(Span::styled(
+            " NAVEGACION GENERAL ",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )),
         Line::from(""),
-        Line::from(vec![Span::styled("  ?         ", Style::default().fg(Color::Yellow)), Span::raw("Abrir esta pantalla de ayuda")]),
-        Line::from(vec![Span::styled("  q / Esc   ", Style::default().fg(Color::Yellow)), Span::raw("Volver / Salir de la aplicacion")]),
-        Line::from(vec![Span::styled("  s         ", Style::default().fg(Color::Yellow)), Span::raw("Ir a Ajustes")]),
-        Line::from(vec![Span::styled("  j / Abajo ", Style::default().fg(Color::Yellow)), Span::raw("Seleccionar trabajo siguiente")]),
-        Line::from(vec![Span::styled("  k / Arriba", Style::default().fg(Color::Yellow)), Span::raw("Seleccionar trabajo anterior")]),
-        Line::from(vec![Span::styled("  Enter     ", Style::default().fg(Color::Yellow)), Span::raw("Ver detalle del trabajo seleccionado")]),
+        Line::from(vec![
+            Span::styled("  ?         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Abrir esta pantalla de ayuda"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q / Esc   ", Style::default().fg(Color::Yellow)),
+            Span::raw("Volver / Salir de la aplicacion"),
+        ]),
+        Line::from(vec![
+            Span::styled("  s         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Ir a Ajustes"),
+        ]),
+        Line::from(vec![
+            Span::styled("  j / Abajo ", Style::default().fg(Color::Yellow)),
+            Span::raw("Seleccionar trabajo siguiente"),
+        ]),
+        Line::from(vec![
+            Span::styled("  k / Arriba", Style::default().fg(Color::Yellow)),
+            Span::raw("Seleccionar trabajo anterior"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter     ", Style::default().fg(Color::Yellow)),
+            Span::raw("Ver detalle del trabajo seleccionado"),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" GESTION DE TRABAJOS ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Line::from(Span::styled(
+            " GESTION DE TRABAJOS ",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )),
         Line::from(""),
-        Line::from(vec![Span::styled("  n         ", Style::default().fg(Color::Yellow)), Span::raw("Agregar nuevo archivo (abre dialogo de ruta)")]),
-        Line::from(vec![Span::styled("  z         ", Style::default().fg(Color::Yellow)), Span::raw("Cancelar el trabajo seleccionado (si esta en progreso)")]),
-        Line::from(vec![Span::styled("  x         ", Style::default().fg(Color::Yellow)), Span::raw("Eliminar el trabajo seleccionado")]),
-        Line::from(vec![Span::styled("  c         ", Style::default().fg(Color::Yellow)), Span::raw("Limpiar todos los trabajos finalizados/cancelados")]),
+        Line::from(vec![
+            Span::styled("  n         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Agregar nuevo archivo (abre dialogo de ruta)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  z         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Cancelar el trabajo seleccionado (si esta en progreso)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  x         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Eliminar el trabajo seleccionado"),
+        ]),
+        Line::from(vec![
+            Span::styled("  c         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Limpiar todos los trabajos finalizados/cancelados"),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" EXPORTACION (en detalle de trabajo) ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Line::from(Span::styled(
+            " EXPORTACION (en detalle de trabajo) ",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )),
         Line::from(""),
-        Line::from(vec![Span::styled("  e         ", Style::default().fg(Color::Yellow)), Span::raw("Exportar como Markdown (.md)")]),
-        Line::from(vec![Span::styled("  E         ", Style::default().fg(Color::Yellow)), Span::raw("Exportar como JSON (.json)")]),
-        Line::from(vec![Span::styled("  p         ", Style::default().fg(Color::Yellow)), Span::raw("Exportar como PDF sandwich (.pdf)")]),
+        Line::from(vec![
+            Span::styled("  e         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Exportar como Markdown (.md)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  E         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Exportar como JSON (.json)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  p         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Exportar como PDF sandwich (.pdf)"),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" AJUSTES ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Line::from(Span::styled(
+            " AJUSTES ",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )),
         Line::from(""),
-        Line::from(vec![Span::styled("  1         ", Style::default().fg(Color::Yellow)), Span::raw("Perfil RAPIDO")]),
-        Line::from(vec![Span::styled("  2         ", Style::default().fg(Color::Yellow)), Span::raw("Perfil EQUILIBRADO (por defecto)")]),
-        Line::from(vec![Span::styled("  3         ", Style::default().fg(Color::Yellow)), Span::raw("Perfil PRECISO")]),
-        Line::from(vec![Span::styled("  4         ", Style::default().fg(Color::Yellow)), Span::raw("Idioma Espanol (spa)")]),
-        Line::from(vec![Span::styled("  5         ", Style::default().fg(Color::Yellow)), Span::raw("Idioma Ingles (eng)")]),
+        Line::from(vec![
+            Span::styled("  1         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Perfil RAPIDO"),
+        ]),
+        Line::from(vec![
+            Span::styled("  2         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Perfil EQUILIBRADO (por defecto)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  3         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Perfil PRECISO"),
+        ]),
+        Line::from(vec![
+            Span::styled("  4         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Idioma Espanol (spa)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  5         ", Style::default().fg(Color::Yellow)),
+            Span::raw("Idioma Ingles (eng)"),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" DIAGNOSTICO ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Line::from(Span::styled(
+            " DIAGNOSTICO ",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("  Log: ", Style::default().fg(Color::DarkGray)),
-            Span::styled("~/.local/share/ocrfast/ocrfast.log", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "~/.local/share/ocrfast/ocrfast.log",
+                Style::default().fg(Color::Gray),
+            ),
         ]),
     ];
 
-    let parrafo = Paragraph::new(texto)
-        .block(Block::default().borders(Borders::ALL).border_type(ratatui::widgets::BorderType::Thick).title(" AYUDA — ATAJOS DE TECLADO "));
+    let parrafo = Paragraph::new(texto).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Thick)
+            .title(" AYUDA — ATAJOS DE TECLADO "),
+    );
     marco.render_widget(parrafo, area);
 }
 
@@ -451,28 +679,37 @@ fn renderizar_ayuda(marco: &mut Frame, area: Rect) {
 fn renderizar_popup_formato(marco: &mut Frame, aplicacion: &AppState) {
     let area = rectangulo_centrado(40, 40, marco.area());
 
-    let items: Vec<ListItem> = OutputFormat::OPCIONES.iter().enumerate().map(|(i, fmt)| {
-        let prefijo = if i == aplicacion.indice_formato { " ▶ " } else { "   " };
-        let etiqueta = format!("{}{} (.{})", prefijo, fmt.nombre(), fmt.extension());
-        let estilo = if i == aplicacion.indice_formato {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        ListItem::new(Line::from(Span::styled(etiqueta, estilo)))
-    }).collect();
+    let items: Vec<ListItem> = OutputFormat::OPCIONES
+        .iter()
+        .enumerate()
+        .map(|(i, fmt)| {
+            let prefijo = if i == aplicacion.indice_formato {
+                " ▶ "
+            } else {
+                "   "
+            };
+            let etiqueta = format!("{}{} (.{})", prefijo, fmt.nombre(), fmt.extension());
+            let estilo = if i == aplicacion.indice_formato {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            ListItem::new(Line::from(Span::styled(etiqueta, estilo)))
+        })
+        .collect();
 
-    let lista = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Thick)
-                .title(" Formato de salida ")
-                .title_bottom(Line::from(Span::styled(
-                    " ↑↓ navegar  Enter confirmar  Esc cancelar ",
-                    Style::default().fg(Color::DarkGray),
-                ))),
-        );
+    let lista = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Thick)
+            .title(" Formato de salida ")
+            .title_bottom(Line::from(Span::styled(
+                " ↑↓ navegar  Enter confirmar  Esc cancelar ",
+                Style::default().fg(Color::DarkGray),
+            ))),
+    );
 
     marco.render_widget(Clear, area);
     marco.render_widget(lista, area);

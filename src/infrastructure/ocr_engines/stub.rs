@@ -1,13 +1,16 @@
-//! Stub OCR engine for testing without real dependencies.
-
 use crate::domain::errors::OcrError;
 use crate::domain::{Document, ProcessingProfile};
 use crate::interfaces::ports::OcrEnginePort;
 
-/// Stub OCR engine que genera texto simulado.
+/// Engine OCR stub para pruebas, demos y fallback operativo.
+///
+/// El stub produce contenido determinista y barato de generar. Su propósito no
+/// es aproximar precisión OCR, sino permitir que TUI, pipeline y exportación
+/// sigan siendo ejercitables cuando el backend real no está disponible.
 pub struct StubOcrEngine;
 
 impl StubOcrEngine {
+    /// Construye un engine stub sin estado interno.
     pub fn new() -> Self {
         Self
     }

@@ -1,22 +1,23 @@
-//! Motores de analisis de layout.
-//!
-//! Este modulo contiene las implementaciones del puerto `LayoutEnginePort`
-//! para detectar y segmentar regiones de contenido en paginas de documentos.
-
-// OnnxLayoutEngine eliminado: era codigo muerto. El layout ONNX real es
-// DocLayoutYoloEngine en infrastructure/ocr_engines/onnx/layout.rs.
-
 use crate::domain::errors::LayoutError;
 use crate::domain::{Block, BlockType, Page, Rectangle};
 use crate::interfaces::ports::LayoutEnginePort;
 
-/// Motor de layout basado en algoritmo XY-Cut.
+/// Segmentador de layout heurístico basado en XY-Cut.
 ///
-/// Segmenta la pagina mediante proyecciones de pixeles oscuros en filas y columnas.
-/// Detecta gaps (regiones vacias) para separar bloques de contenido de forma recursiva.
+/// Esta implementación prioriza determinismo, cero dependencias nativas y coste
+/// computacional bajo. Funciona especialmente bien en documentos con columnas,
+/// títulos y separaciones claras, y sirve como fallback cuando un detector ONNX
+/// sería demasiado costoso o innecesario.
 ///
-/// Es un algoritmo determinista, rapido y efectivo para documentos con
-/// estructura columnar regular (texto corrido, dos columnas, titulos).
+/// # Performance
+///
+/// Opera sobre proyecciones binarias y evita inferencia, por lo que su coste está
+/// acotado por recorridos lineales sobre la imagen.
+///
+/// # Trade-offs
+///
+/// La heurística es menos robusta ante layouts complejos, formularios densos o
+/// gráficos superpuestos. Se asume esa limitación a cambio de simplicidad.
 pub struct XyCutLayoutEngine {
     /// Ancho minimo en pixeles de un gap para ser considerado separador.
     min_gap_threshold: u32,
@@ -25,7 +26,7 @@ pub struct XyCutLayoutEngine {
 }
 
 impl XyCutLayoutEngine {
-    /// Crea un nuevo motor XY-Cut con parametros por defecto.
+    /// Crea un motor XY-Cut con umbrales conservadores por defecto.
     pub fn new() -> Self {
         Self {
             min_gap_threshold: 20,
@@ -33,20 +34,19 @@ impl XyCutLayoutEngine {
         }
     }
 
-    /// Crea un motor XY-Cut con parametros personalizados.
+    /// Crea un motor XY-Cut con parámetros explícitos de sensibilidad.
     pub fn with_params(min_gap_threshold: u32, min_block_size: u32) -> Self {
-        Self { min_gap_threshold, min_block_size }
+        Self {
+            min_gap_threshold,
+            min_block_size,
+        }
     }
 
     /// Calcula la proyeccion horizontal: numero de pixeles oscuros por fila.
     fn proyeccion_horizontal(&self, img: &image::GrayImage) -> Vec<u32> {
         let (ancho, alto) = img.dimensions();
         (0..alto)
-            .map(|y| {
-                (0..ancho)
-                    .filter(|&x| img.get_pixel(x, y)[0] < 128)
-                    .count() as u32
-            })
+            .map(|y| (0..ancho).filter(|&x| img.get_pixel(x, y)[0] < 128).count() as u32)
             .collect()
     }
 
@@ -120,7 +120,10 @@ impl LayoutEnginePort for XyCutLayoutEngine {
         let image_data = match &page.image_data {
             Some(data) => data,
             None => {
-                log::warn!("Pagina {} sin imagen, retornando bloques existentes", page.number);
+                log::warn!(
+                    "Pagina {} sin imagen, retornando bloques existentes",
+                    page.number
+                );
                 return Ok(page.blocks.clone());
             }
         };
@@ -128,7 +131,10 @@ impl LayoutEnginePort for XyCutLayoutEngine {
         if page.dimensions.width < self.min_block_size
             || page.dimensions.height < self.min_block_size
         {
-            log::warn!("Pagina {} demasiado pequena para analisis XY-Cut", page.number);
+            log::warn!(
+                "Pagina {} demasiado pequena para analisis XY-Cut",
+                page.number
+            );
             return Ok(vec![]);
         }
 
@@ -175,13 +181,7 @@ impl LayoutEnginePort for XyCutLayoutEngine {
                 let bloque_ancho = (x_fin - x_ini) as u32;
                 let bloque_alto = (y_fin - y_ini) as u32;
 
-                let tipo = clasificar_bloque(
-                    *y_ini as u32,
-                    bloque_ancho,
-                    bloque_alto,
-                    ancho,
-                    alto,
-                );
+                let tipo = clasificar_bloque(*y_ini as u32, bloque_ancho, bloque_alto, ancho, alto);
 
                 bloques.push(Block {
                     block_type: tipo,

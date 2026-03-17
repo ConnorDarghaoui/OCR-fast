@@ -1,10 +1,8 @@
-//! Modulo TUI: Terminal User Interface para OCRFast.
-//!
-//! Este modulo proporciona una interfaz interactiva de terminal usando ratatui
-//! para rendering de widgets y crossterm para manejo de eventos cross-platform.
-
+/// Estado reactivo y coordinación de jobs de la TUI.
 pub mod app_state;
+/// Loop de eventos de teclado y mouse desacoplado del render.
 pub mod events;
+/// Render puro de widgets y composición visual.
 pub mod ui;
 
 use crate::interfaces::ports::{DocumentParserPort, JobStorePort, OcrEnginePort};
@@ -37,16 +35,27 @@ fn registrar_hook_panico() {
         // Restaurar terminal incondicionalmente; los errores se ignoran porque
         // ya estamos en un camino de panico y no hay forma util de propagarlos.
         let _ = disable_raw_mode();
-        let _ = crossterm::execute!(
-            io::stderr(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-        );
+        let _ = crossterm::execute!(io::stderr(), LeaveAlternateScreen, DisableMouseCapture,);
         // Delegar al handler original para que imprima el backtrace/mensaje.
         hook_original(info);
     }));
 }
 
+/// Ejecuta la TUI completa y restaura el terminal al salir.
+///
+/// La función centraliza inicialización y teardown del terminal porque esa
+/// responsabilidad no puede dispersarse sin riesgo de dejar la sesión del shell
+/// en raw mode tras un panic o un retorno temprano.
+///
+/// # Errors
+///
+/// Retorna `io::Error` cuando la infraestructura de terminal no puede entrar en
+/// modo alterno, raw mode o restaurarse correctamente.
+///
+/// # Notes
+///
+/// El hook de pánico se registra antes de habilitar raw mode para cubrir toda la
+/// ventana crítica de la sesión interactiva.
 pub fn run(
     parser: Arc<dyn DocumentParserPort>,
     ocr_engine: Arc<dyn OcrEnginePort>,
@@ -65,7 +74,7 @@ pub fn run(
 
     // Crear estado de la aplicacion
     let mut app = AppState::nuevo(parser, ocr_engine, job_store);
-    
+
     // Iniciar carga en background si se solicita
     if cargar_onnx {
         app.iniciar_carga_motor();

@@ -1,9 +1,3 @@
-//! Motor de analisis de layout basado en DocLayout-YOLO.
-//!
-//! Utiliza el modelo ONNX DocLayout-YOLO para detectar regiones
-//! semanticas en paginas de documentos: titulos, texto, tablas,
-//! figuras, formulas, etc.
-
 use crate::domain::errors::LayoutError;
 use crate::domain::{Block, BlockType, Rectangle};
 use crate::infrastructure::ocr_engines::onnx::preprocessing;
@@ -13,7 +7,11 @@ use ort::value::Tensor;
 use std::path::Path;
 use std::sync::Mutex;
 
-/// Motor de layout que usa DocLayout-YOLO via ONNX Runtime.
+/// Detector de layout semántico basado en DocLayout-YOLO.
+///
+/// Este adaptador captura casos donde un enfoque heurístico como XY-Cut pierde
+/// demasiada precisión. Se usa `Mutex<Session>` por las mismas razones que el
+/// resto del stack ONNX: compartir sesiones sin ownership exclusivo en workers.
 pub struct DocLayoutYoloEngine {
     /// Sesion ONNX del modelo (Mutex por &mut self en run).
     sesion: Mutex<Session>,
@@ -24,15 +22,18 @@ pub struct DocLayoutYoloEngine {
 }
 
 impl DocLayoutYoloEngine {
-    /// Crea un nuevo motor cargando el modelo ONNX.
+    /// Carga el modelo DocLayout-YOLO y prepara la sesión de inferencia.
     pub fn new(ruta_modelo: &Path) -> Result<Self, LayoutError> {
         let sesion = Session::builder()
             .and_then(|b| b.with_intra_threads(4))
             .and_then(|b| b.with_execution_providers(super::gpu_config::providers(0)))
             .and_then(|b| b.commit_from_file(ruta_modelo))
-            .map_err(|e| LayoutError::SegmentationError(
-                format!("Error cargando modelo DocLayout-YOLO: {}", e)
-            ))?;
+            .map_err(|e| {
+                LayoutError::SegmentationError(format!(
+                    "Error cargando modelo DocLayout-YOLO: {}",
+                    e
+                ))
+            })?;
 
         log::info!("DocLayout-YOLO cargado desde: {:?}", ruta_modelo);
 
@@ -43,36 +44,35 @@ impl DocLayoutYoloEngine {
         })
     }
 
-    /// Analiza una imagen de pagina y retorna bloques detectados.
+    /// Analiza una imagen y retorna bloques usando los umbrales por defecto.
     pub fn analizar_imagen(&self, imagen: &DynamicImage) -> Result<Vec<Block>, LayoutError> {
         self.analizar_imagen_con_umbrales(imagen, self.umbral_confianza, self.umbral_nms)
     }
 
-    /// Analiza una imagen con umbrales explicitos para ajuste por perfil de procesamiento.
+    /// Analiza una imagen con umbrales explícitos para ajuste por perfil.
     pub fn analizar_imagen_con_umbrales(
         &self,
         imagen: &DynamicImage,
         umbral_confianza: f32,
         umbral_nms: f32,
     ) -> Result<Vec<Block>, LayoutError> {
-        let (tensor_datos, escala_inv_x, escala_inv_y) = preprocessing::preparar_para_layout(imagen);
-
+        let (tensor_datos, escala_inv_x, escala_inv_y) =
+            preprocessing::preparar_para_layout(imagen);
 
         let forma = tensor_datos.shape().to_vec();
         let datos_flat: Vec<f32> = tensor_datos.as_standard_layout().iter().cloned().collect();
         let forma_i64: Vec<i64> = forma.iter().map(|&d| d as i64).collect();
 
         let input_tensor = Tensor::from_array((forma_i64, datos_flat))
-            .map_err(|e| LayoutError::SegmentationError(
-                format!("Error creando tensor: {}", e)
-            ))?;
+            .map_err(|e| LayoutError::SegmentationError(format!("Error creando tensor: {}", e)))?;
 
-        let mut sesion = self.sesion.lock()
+        let mut sesion = self
+            .sesion
+            .lock()
             .map_err(|e| LayoutError::SegmentationError(format!("Mutex poisoned: {}", e)))?;
-        let salidas = sesion.run(ort::inputs![input_tensor])
-            .map_err(|e| LayoutError::SegmentationError(
-                format!("Error ejecutando inferencia: {}", e)
-            ))?;
+        let salidas = sesion.run(ort::inputs![input_tensor]).map_err(|e| {
+            LayoutError::SegmentationError(format!("Error ejecutando inferencia: {}", e))
+        })?;
 
         let detecciones_raw = self.parsear_salida_yolo_con_umbral(&salidas, umbral_confianza)?;
         let detecciones_filtradas = aplicar_nms(detecciones_raw, umbral_nms);
@@ -96,7 +96,12 @@ impl DocLayoutYoloEngine {
 
             bloques.push(Block {
                 block_type: tipo_bloque,
-                bounding_box: Rectangle { x, y, width: ancho, height: alto },
+                bounding_box: Rectangle {
+                    x,
+                    y,
+                    width: ancho,
+                    height: alto,
+                },
                 content: String::new(),
                 confidence: det.confianza as f64,
                 embedded_image: None,
@@ -104,7 +109,6 @@ impl DocLayoutYoloEngine {
                 reading_order: i as u32,
             });
         }
-
 
         bloques.sort_by_key(|b| b.bounding_box.y);
         for (i, bloque) in bloques.iter_mut().enumerate() {
@@ -122,18 +126,17 @@ impl DocLayoutYoloEngine {
         salidas: &ort::session::SessionOutputs,
         umbral_confianza: f32,
     ) -> Result<Vec<DeteccionRaw>, LayoutError> {
-        let (forma_info, datos) = salidas[0]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| LayoutError::SegmentationError(
-                format!("Error extrayendo tensor: {}", e)
-            ))?;
+        let (forma_info, datos) = salidas[0].try_extract_tensor::<f32>().map_err(|e| {
+            LayoutError::SegmentationError(format!("Error extrayendo tensor: {}", e))
+        })?;
 
         let forma = &*forma_info;
 
         if forma.len() != 3 {
-            return Err(LayoutError::SegmentationError(
-                format!("Forma inesperada del output: {:?}", forma)
-            ));
+            return Err(LayoutError::SegmentationError(format!(
+                "Forma inesperada del output: {:?}",
+                forma
+            )));
         }
 
         let num_atributos = forma[1] as usize;
@@ -175,14 +178,17 @@ impl DocLayoutYoloEngine {
 
         Ok(detecciones)
     }
-
 }
 
 /// Aplica Non-Maximum Suppression para eliminar detecciones duplicadas.
 ///
 /// Funcion libre para facilitar testing unitario sin instancia del engine.
 fn aplicar_nms(mut detecciones: Vec<DeteccionRaw>, umbral_nms: f32) -> Vec<DeteccionRaw> {
-    detecciones.sort_by(|a, b| b.confianza.partial_cmp(&a.confianza).unwrap_or(std::cmp::Ordering::Equal));
+    detecciones.sort_by(|a, b| {
+        b.confianza
+            .partial_cmp(&a.confianza)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut resultado: Vec<DeteccionRaw> = Vec::new();
 
@@ -223,15 +229,33 @@ fn calcular_iou(a: &DeteccionRaw, b: &DeteccionRaw) -> f32 {
     let area_b = b.ancho * b.alto;
     let union = area_a + area_b - interseccion;
 
-    if union > 0.0 { interseccion / union } else { 0.0 }
+    if union > 0.0 {
+        interseccion / union
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn crear_deteccion(x: f32, y: f32, ancho: f32, alto: f32, confianza: f32, clase: usize) -> DeteccionRaw {
-        DeteccionRaw { x, y, ancho, alto, confianza, clase }
+    fn crear_deteccion(
+        x: f32,
+        y: f32,
+        ancho: f32,
+        alto: f32,
+        confianza: f32,
+        clase: usize,
+    ) -> DeteccionRaw {
+        DeteccionRaw {
+            x,
+            y,
+            ancho,
+            alto,
+            confianza,
+            clase,
+        }
     }
 
     #[test]
@@ -239,7 +263,11 @@ mod tests {
         let a = crear_deteccion(10.0, 10.0, 100.0, 100.0, 0.9, 0);
         let b = crear_deteccion(10.0, 10.0, 100.0, 100.0, 0.8, 0);
         let iou = calcular_iou(&a, &b);
-        assert!((iou - 1.0).abs() < 0.001, "IoU de cajas identicas debe ser 1.0, fue: {}", iou);
+        assert!(
+            (iou - 1.0).abs() < 0.001,
+            "IoU de cajas identicas debe ser 1.0, fue: {}",
+            iou
+        );
     }
 
     #[test]
@@ -247,7 +275,11 @@ mod tests {
         let a = crear_deteccion(0.0, 0.0, 50.0, 50.0, 0.9, 0);
         let b = crear_deteccion(100.0, 100.0, 50.0, 50.0, 0.8, 0);
         let iou = calcular_iou(&a, &b);
-        assert!(iou.abs() < 0.001, "IoU sin overlap debe ser 0.0, fue: {}", iou);
+        assert!(
+            iou.abs() < 0.001,
+            "IoU sin overlap debe ser 0.0, fue: {}",
+            iou
+        );
     }
 
     #[test]
@@ -260,7 +292,11 @@ mod tests {
         let a = crear_deteccion(0.0, 0.0, 100.0, 100.0, 0.9, 0);
         let b = crear_deteccion(50.0, 50.0, 100.0, 100.0, 0.8, 0);
         let iou = calcular_iou(&a, &b);
-        assert!((iou - 0.1428).abs() < 0.01, "IoU parcial incorrecto: {}", iou);
+        assert!(
+            (iou - 0.1428).abs() < 0.01,
+            "IoU parcial incorrecto: {}",
+            iou
+        );
     }
 
     #[test]
@@ -292,7 +328,11 @@ mod tests {
         ];
 
         let resultado = aplicar_nms(detecciones, 0.45);
-        assert_eq!(resultado.len(), 3, "NMS no debe suprimir detecciones de clases distintas");
+        assert_eq!(
+            resultado.len(),
+            3,
+            "NMS no debe suprimir detecciones de clases distintas"
+        );
     }
 
     #[test]
@@ -306,7 +346,10 @@ mod tests {
         let a = crear_deteccion(0.0, 0.0, 200.0, 200.0, 0.9, 0);
         let b = crear_deteccion(50.0, 50.0, 50.0, 50.0, 0.8, 0);
         let iou = calcular_iou(&a, &b);
-        assert!((iou - 0.0625).abs() < 0.01, "IoU contenida incorrecto: {}", iou);
+        assert!(
+            (iou - 0.0625).abs() < 0.01,
+            "IoU contenida incorrecto: {}",
+            iou
+        );
     }
 }
-
