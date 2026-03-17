@@ -1,0 +1,37 @@
+# Rust
+/target
+
+# pdfium binaries (descargados por build.rs)
+libpdfium.*
+pdfium.dll
+
+# Modelos ONNX (descargados en runtime, ~GB)
+models/
+
+# Claude Code
+.claude/
+
+# Entornos y secretos
+.env
+.env.*
+secrets.*
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentos internos de trabajo
+GIT_COMMIT_GUIDE.md
+CHANGELOG.md
+MVP_Arquitectura_Patrones_Modelos_OCR_Rust.md
+RF_SRS_OCR_Rust.md
+
+# Release-please (CI interno)
+release-please-config.json
+.release-please-manifest.json

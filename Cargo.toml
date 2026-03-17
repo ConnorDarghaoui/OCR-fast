@@ -1,0 +1,75 @@
+[package]
+name = "ocrfast"
+version = "0.2.0"
+edition = "2021"
+authors = ["Lucas luisboniche@ya.ru"]
+description = "Sistema OCR (Reconocimiento Óptico de Caracteres) local-first implementado en Rust"
+license = "MIT"
+repository = "https://github.com/tu-usuario/ocrfast"
+homepage = "https://github.com/tu-usuario/ocrfast"
+documentation = "https://docs.rs/ocrfast"
+readme = "README.md"
+keywords = ["ocr", "rust", "document-processing", "local-first", "tesseract"]
+categories = ["algorithms", "parsing", "multimedia::images"]
+
+[lib]
+name = "ocrfast"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ocrfast"
+path = "src/main.rs"
+
+[dependencies]
+uuid = { version = "1.0", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+image = "0.25"
+ratatui = "0.28"
+crossterm = "0.28"
+chrono = "0.4"
+log = "0.4"
+env_logger = "0.11"
+fern = "0.7"
+
+# ONNX Runtime para inferencia de modelos
+ort = { version = "2.0.0-rc.11", features = ["download-binaries"] }
+
+# Tensores y algebra lineal
+ndarray = "0.16"
+
+# Descarga de modelos desde Hugging Face (blocking, sin async)
+reqwest = { version = "0.12", features = ["blocking"] }
+
+# Directorios XDG (~/.local/share, ~/.config)
+dirs = "5.0"
+
+# Verificacion de integridad SHA256 para modelos descargados
+sha2 = "0.10"
+pdfium-render = "0.8.37"
+unicode-normalization = "0.1.25"
+lopdf = "0.34"
+tiff = "0.10"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tempfile = "3.0"
+
+[features]
+default = []
+tesseract = []
+onnx = []
+# Aceleracion GPU — compilar con: cargo build --features cuda
+cuda    = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]
+coreml  = ["ort/coreml"]
+rocm    = ["ort/rocm"]
+# Habilitar tests de integracion con documentos reales (requiere modelos ONNX descargados).
+# Ejecutar con: cargo test --features ci_real_docs --test real_document_tests -- --ignored
+ci_real_docs = []
+
+[build-dependencies]
+reqwest = { version = "0.12", features = ["blocking"] }
+flate2 = "1.0"
+tar = "0.4"

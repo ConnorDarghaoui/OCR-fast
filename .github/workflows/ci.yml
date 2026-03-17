@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: Build & Test — ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # OpenSSL requerido por reqwest en Linux (build.rs + descarga de modelos)
+      - name: Dependencias del sistema (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Instalar Rust toolchain estable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Cachear ~/.cargo/registry, ~/.cargo/git y target/
+      # La cache incluye target/pdfium-download/ para evitar re-descargar pdfium
+      - name: Cache dependencias Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ matrix.target }}
+          cache-directories: |
+            target/pdfium-download
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Tests
+        run: cargo test --verbose
