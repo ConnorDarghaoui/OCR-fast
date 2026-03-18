@@ -340,7 +340,7 @@ pub enum OutputFormat {
     Docx,
     /// Fuente LaTeX con posicionamiento guiado por blueprint visual.
     Latex,
-    /// PDF tipo sandwich (imagen + texto invisible seleccionable).
+    /// PDF reconstruido desde layout, texto, tablas e imágenes.
     Pdf,
     /// JSON con el Job completo serializado.
     Json,

@@ -301,126 +301,63 @@ impl ExporterPort for LatexExporter {
     }
 }
 
-/// Exportador a PDF sandwich con texto invisible seleccionable.
-pub struct PdfSandwichExporter;
+/// Exportador a PDF reconstruido a partir del blueprint visual.
+///
+/// Esta ruta renderiza texto, tablas, líneas e imágenes directamente sobre una
+/// página PDF en blanco. El resultado deja de depender de incrustar el escaneo
+/// completo y se acerca más a un documento reeditable/facsímil generado.
+pub struct PdfReconstructedExporter;
 
-impl PdfSandwichExporter {
-    /// Construye un exportador PDF sandwich sin estado mutable.
+impl PdfReconstructedExporter {
+    /// Construye un exportador PDF reconstruido sin estado mutable.
     pub fn new() -> Self {
         Self
     }
-
-    /// Convierte pixeles a puntos PDF.
-    fn px_a_pt(px: u32) -> f64 {
-        px_a_pt(px)
-    }
 }
 
-impl Default for PdfSandwichExporter {
+impl Default for PdfReconstructedExporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ExporterPort for PdfSandwichExporter {
+impl ExporterPort for PdfReconstructedExporter {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
-        use lopdf::content::{Content, Operation};
+        use lopdf::content::Content;
         use lopdf::{Document, Object};
 
         asegurar_directorio_padre(output_path)?;
 
+        let blueprint = construir_blueprint(&job.document)?;
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
-
         let font_id = doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
             "BaseFont" => "Helvetica",
         });
-
         let mut page_ids: Vec<Object> = Vec::new();
 
-        for pagina in &job.document.pages {
-            let ancho_pt = Self::px_a_pt(pagina.dimensions.width);
-            let alto_pt = Self::px_a_pt(pagina.dimensions.height);
-
-            let mut operaciones_imagen: Vec<Operation> = Vec::new();
+        for pagina in &blueprint.pages {
+            let ancho_pt = px_a_pt(pagina.dimensions.width);
+            let alto_pt = px_a_pt(pagina.dimensions.height);
+            let mut operaciones = Vec::new();
             let mut recursos_xobject = lopdf::Dictionary::new();
 
-            if let Some(ref datos_imagen) = pagina.image_data {
-                match Self::crear_xobject_imagen(&mut doc, datos_imagen) {
-                    Ok((xobj_id, img_name)) => {
-                        recursos_xobject.set(img_name.clone(), xobj_id);
-
-                        operaciones_imagen.push(Operation::new("q", vec![]));
-                        operaciones_imagen.push(Operation::new(
-                            "cm",
-                            vec![
-                                ancho_pt.into(),
-                                0.into(),
-                                0.into(),
-                                alto_pt.into(),
-                                0.into(),
-                                0.into(),
-                            ],
-                        ));
-                        operaciones_imagen.push(Operation::new(
-                            "Do",
-                            vec![Object::Name(img_name.into_bytes())],
-                        ));
-                        operaciones_imagen.push(Operation::new("Q", vec![]));
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "No se pudo crear XObject de imagen para pagina {}: {}",
-                            pagina.number,
-                            e
-                        );
-                    }
-                }
+            for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
+                agregar_elemento_pdf(
+                    job,
+                    pagina,
+                    elemento,
+                    indice_elemento,
+                    &mut doc,
+                    &mut recursos_xobject,
+                    &mut operaciones,
+                )?;
             }
-
-            let mut operaciones_texto: Vec<Operation> = Vec::new();
-            let bloques_con_texto: Vec<_> = pagina
-                .blocks
-                .iter()
-                .filter(|b| !b.content.trim().is_empty())
-                .collect();
-
-            if !bloques_con_texto.is_empty() {
-                operaciones_texto.push(Operation::new("BT", vec![]));
-                operaciones_texto.push(Operation::new("Tr", vec![3.into()]));
-
-                for bloque in &bloques_con_texto {
-                    let bbox = &bloque.bounding_box;
-
-                    let alto_bloque_pt = Self::px_a_pt(bbox.height);
-                    let tamano_fuente = (alto_bloque_pt * FACTOR_TAMANO_FUENTE)
-                        .max(TAMANO_FUENTE_MINIMO_PT)
-                        .min(TAMANO_FUENTE_MAXIMO_PT);
-
-                    let x_pt = Self::px_a_pt(bbox.x);
-                    let y_pt = alto_pt - Self::px_a_pt(bbox.y) - alto_bloque_pt;
-
-                    operaciones_texto.push(Operation::new(
-                        "Tf",
-                        vec!["F1".into(), tamano_fuente.into()],
-                    ));
-                    operaciones_texto.push(Operation::new("Td", vec![x_pt.into(), y_pt.into()]));
-                    operaciones_texto.push(Operation::new(
-                        "Tj",
-                        vec![Object::string_literal(bloque.content.clone())],
-                    ));
-                }
-
-                operaciones_texto.push(Operation::new("ET", vec![]));
-            }
-
-            let mut todas_las_ops = operaciones_imagen;
-            todas_las_ops.extend(operaciones_texto);
 
             let content = Content {
-                operations: todas_las_ops,
+                operations: operaciones,
             };
             let content_id = doc.add_object(lopdf::Stream::new(
                 dictionary! {},
@@ -443,7 +380,6 @@ impl ExporterPort for PdfSandwichExporter {
             }
 
             let resources_id = doc.add_object(Object::Dictionary(resources_dict));
-
             let page_id = doc.add_object(dictionary! {
                 "Type" => "Page",
                 "Parent" => pages_id,
@@ -456,14 +392,13 @@ impl ExporterPort for PdfSandwichExporter {
                     Object::Real(alto_pt as f32),
                 ],
             });
-
             page_ids.push(page_id.into());
         }
 
         let pages = dictionary! {
             "Type" => "Pages",
             "Kids" => page_ids,
-            "Count" => job.document.pages.len() as u32,
+            "Count" => blueprint.pages.len() as u32,
         };
         doc.objects
             .insert(pages_id, lopdf::Object::Dictionary(pages));
@@ -473,7 +408,6 @@ impl ExporterPort for PdfSandwichExporter {
             "Pages" => pages_id,
         });
         doc.trailer.set("Root", catalog_id);
-
         doc.compress();
         doc.save(output_path)
             .map_err(|e| ExportError::SerializationError(format!("Error guardando PDF: {e}")))?;
@@ -482,36 +416,7 @@ impl ExporterPort for PdfSandwichExporter {
     }
 
     fn format_name(&self) -> &str {
-        "PDF Sandwich"
-    }
-}
-
-impl PdfSandwichExporter {
-    /// Decodifica los bytes de imagen y crea un XObject Image en el documento PDF.
-    fn crear_xobject_imagen(
-        doc: &mut lopdf::Document,
-        datos_imagen: &[u8],
-    ) -> Result<(lopdf::ObjectId, String), String> {
-        let imagen_dyn =
-            image::load_from_memory(datos_imagen).map_err(|e| format!("Decodificacion: {e}"))?;
-
-        let rgb = imagen_dyn.to_rgb8();
-        let (ancho, alto) = rgb.dimensions();
-        let pixeles_raw = rgb.into_raw();
-
-        let img_dict = lopdf::dictionary! {
-            "Type" => "XObject",
-            "Subtype" => "Image",
-            "Width" => ancho as i64,
-            "Height" => alto as i64,
-            "ColorSpace" => "DeviceRGB",
-            "BitsPerComponent" => 8,
-        };
-
-        let img_stream = lopdf::Stream::new(img_dict, pixeles_raw);
-        let xobj_id = doc.add_object(img_stream);
-
-        Ok((xobj_id, format!("Im{}", xobj_id.0)))
+        "PDF Reconstruido"
     }
 }
 
@@ -622,6 +527,334 @@ fn recortar_imagen_desde_referencia(
         })?;
 
     Ok(cursor.into_inner())
+}
+
+fn agregar_elemento_pdf(
+    job: &Job,
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    indice_elemento: usize,
+    doc: &mut lopdf::Document,
+    recursos_xobject: &mut lopdf::Dictionary,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) -> Result<(), ExportError> {
+    match elemento.role {
+        ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
+            agregar_imagen_pdf(
+                job,
+                pagina,
+                elemento,
+                indice_elemento,
+                doc,
+                recursos_xobject,
+                operaciones,
+            )?;
+        }
+        ElementRole::Table => {
+            if let Some(ref tabla) = elemento.table {
+                agregar_tabla_pdf(pagina, elemento, tabla, operaciones);
+            } else {
+                agregar_texto_pdf(pagina, elemento, operaciones);
+            }
+        }
+        ElementRole::Separator => agregar_separador_pdf(pagina, elemento, operaciones),
+        _ => agregar_texto_pdf(pagina, elemento, operaciones),
+    }
+
+    Ok(())
+}
+
+fn agregar_imagen_pdf(
+    job: &Job,
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    _indice_elemento: usize,
+    doc: &mut lopdf::Document,
+    recursos_xobject: &mut lopdf::Dictionary,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) -> Result<(), ExportError> {
+    let Some(ref imagen) = elemento.image_crop else {
+        return Ok(());
+    };
+
+    let bytes =
+        match recortar_imagen_desde_referencia(job, imagen.page_number, &imagen.bounding_box) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(()),
+        };
+
+    let (xobject_id, nombre) = crear_xobject_imagen_pdf(doc, &bytes).map_err(|e| {
+        ExportError::SerializationError(format!("No se pudo crear XObject PDF: {e}"))
+    })?;
+    recursos_xobject.set(nombre.clone(), xobject_id);
+
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let width_pt = px_a_pt(elemento.bounding_box.width);
+    let height_pt = px_a_pt(elemento.bounding_box.height);
+    let origin_y = px_a_pt(pagina.dimensions.height) - y_pt - height_pt;
+
+    operaciones.push(lopdf::content::Operation::new("q", vec![]));
+    operaciones.push(lopdf::content::Operation::new(
+        "cm",
+        vec![
+            lopdf::Object::Real(width_pt as f32),
+            0.into(),
+            0.into(),
+            lopdf::Object::Real(height_pt as f32),
+            lopdf::Object::Real(x_pt as f32),
+            lopdf::Object::Real(origin_y as f32),
+        ],
+    ));
+    operaciones.push(lopdf::content::Operation::new(
+        "Do",
+        vec![lopdf::Object::Name(nombre.into_bytes())],
+    ));
+    operaciones.push(lopdf::content::Operation::new("Q", vec![]));
+
+    Ok(())
+}
+
+fn agregar_texto_pdf(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) {
+    if elemento.text.trim().is_empty() {
+        return;
+    }
+
+    let width_pt = px_a_pt(elemento.bounding_box.width).max(12.0);
+    let height_pt = px_a_pt(elemento.bounding_box.height).max(10.0);
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let pagina_alto_pt = px_a_pt(pagina.dimensions.height);
+    let font_size = (height_pt * FACTOR_TAMANO_FUENTE)
+        .max(TAMANO_FUENTE_MINIMO_PT)
+        .min(TAMANO_FUENTE_MAXIMO_PT);
+    let line_height = (font_size * 1.18).max(8.0);
+    let ancho_util = (width_pt - 4.0).max(10.0);
+    let lineas = envolver_texto_para_pdf(&elemento.text, ancho_util, font_size);
+
+    for (indice_linea, linea) in lineas.iter().enumerate() {
+        let baseline_y = pagina_alto_pt - y_pt - font_size - (indice_linea as f64 * line_height);
+        if baseline_y <= 0.0 {
+            break;
+        }
+
+        let ancho_estimado = estimar_ancho_linea_pdf(linea, font_size);
+        let margen_izquierdo = elemento.style.left_indent_pt as f64;
+        let texto_x = match elemento.style.alignment {
+            AlignmentHint::Center => x_pt + ((width_pt - ancho_estimado) / 2.0).max(0.0),
+            AlignmentHint::Right => x_pt + (width_pt - ancho_estimado - 2.0).max(0.0),
+            AlignmentHint::Left | AlignmentHint::FullWidth => x_pt + margen_izquierdo + 1.0,
+        };
+
+        operaciones.push(lopdf::content::Operation::new("BT", vec![]));
+        operaciones.push(lopdf::content::Operation::new(
+            "Tf",
+            vec!["F1".into(), lopdf::Object::Real(font_size as f32)],
+        ));
+        operaciones.push(lopdf::content::Operation::new(
+            "Tm",
+            vec![
+                1.into(),
+                0.into(),
+                0.into(),
+                1.into(),
+                lopdf::Object::Real(texto_x as f32),
+                lopdf::Object::Real(baseline_y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new(
+            "Tj",
+            vec![lopdf::Object::string_literal(linea.clone())],
+        ));
+        operaciones.push(lopdf::content::Operation::new("ET", vec![]));
+    }
+}
+
+fn agregar_tabla_pdf(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    tabla: &TableStructure,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) {
+    let filas = tabla.rows.len().max(1) as f64;
+    let columnas = tabla.num_cols.max(1) as f64;
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let width_pt = px_a_pt(elemento.bounding_box.width).max(24.0);
+    let height_pt = px_a_pt(elemento.bounding_box.height).max(24.0);
+    let pagina_alto_pt = px_a_pt(pagina.dimensions.height);
+    let celda_ancho = width_pt / columnas;
+    let celda_alto = height_pt / filas;
+    let base_y = pagina_alto_pt - y_pt - height_pt;
+
+    operaciones.push(lopdf::content::Operation::new("q", vec![]));
+    operaciones.push(lopdf::content::Operation::new("w", vec![0.8.into()]));
+
+    for columna in 0..=columnas as usize {
+        let x = x_pt + (columna as f64 * celda_ancho);
+        operaciones.push(lopdf::content::Operation::new(
+            "m",
+            vec![
+                lopdf::Object::Real(x as f32),
+                lopdf::Object::Real(base_y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new(
+            "l",
+            vec![
+                lopdf::Object::Real(x as f32),
+                lopdf::Object::Real((base_y + height_pt) as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new("S", vec![]));
+    }
+
+    for fila in 0..=filas as usize {
+        let y = base_y + (fila as f64 * celda_alto);
+        operaciones.push(lopdf::content::Operation::new(
+            "m",
+            vec![
+                lopdf::Object::Real(x_pt as f32),
+                lopdf::Object::Real(y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new(
+            "l",
+            vec![
+                lopdf::Object::Real((x_pt + width_pt) as f32),
+                lopdf::Object::Real(y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new("S", vec![]));
+    }
+
+    operaciones.push(lopdf::content::Operation::new("Q", vec![]));
+
+    for (indice_fila, fila) in tabla.rows.iter().enumerate() {
+        for (indice_columna, celda) in fila.iter().enumerate() {
+            let caja = ElementBlueprint {
+                role: ElementRole::Paragraph,
+                bounding_box: Rectangle {
+                    x: elemento.bounding_box.x
+                        + ((indice_columna as f64 * elemento.bounding_box.width as f64 / columnas)
+                            .round() as u32)
+                        + 4,
+                    y: elemento.bounding_box.y
+                        + ((indice_fila as f64 * elemento.bounding_box.height as f64 / filas)
+                            .round() as u32)
+                        + 4,
+                    width: (celda_ancho.max(8.0) as u32).saturating_sub(8),
+                    height: (celda_alto.max(8.0) as u32).saturating_sub(8),
+                },
+                reading_order: 0,
+                column_index: 0,
+                total_columns: 1,
+                text: celda.content.clone(),
+                table: None,
+                image_crop: None,
+                style: elemento.style.clone(),
+            };
+            agregar_texto_pdf(pagina, &caja, operaciones);
+        }
+    }
+}
+
+fn agregar_separador_pdf(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) {
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let width_pt = px_a_pt(elemento.bounding_box.width);
+    let pagina_alto_pt = px_a_pt(pagina.dimensions.height);
+    let y = pagina_alto_pt - y_pt - 1.0;
+
+    operaciones.push(lopdf::content::Operation::new("q", vec![]));
+    operaciones.push(lopdf::content::Operation::new("w", vec![1.into()]));
+    operaciones.push(lopdf::content::Operation::new(
+        "m",
+        vec![
+            lopdf::Object::Real(x_pt as f32),
+            lopdf::Object::Real(y as f32),
+        ],
+    ));
+    operaciones.push(lopdf::content::Operation::new(
+        "l",
+        vec![
+            lopdf::Object::Real((x_pt + width_pt) as f32),
+            lopdf::Object::Real(y as f32),
+        ],
+    ));
+    operaciones.push(lopdf::content::Operation::new("S", vec![]));
+    operaciones.push(lopdf::content::Operation::new("Q", vec![]));
+}
+
+fn envolver_texto_para_pdf(texto: &str, ancho_pt: f64, font_size: f64) -> Vec<String> {
+    let texto = texto.trim();
+    if texto.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lineas = Vec::new();
+    for parrafo in texto.lines() {
+        let mut actual = String::new();
+        for palabra in parrafo.split_whitespace() {
+            let candidato = if actual.is_empty() {
+                palabra.to_string()
+            } else {
+                format!("{actual} {palabra}")
+            };
+
+            if estimar_ancho_linea_pdf(&candidato, font_size) <= ancho_pt || actual.is_empty() {
+                actual = candidato;
+            } else {
+                lineas.push(actual);
+                actual = palabra.to_string();
+            }
+        }
+
+        if !actual.is_empty() {
+            lineas.push(actual);
+        }
+        if parrafo.is_empty() {
+            lineas.push(String::new());
+        }
+    }
+
+    lineas
+}
+
+fn estimar_ancho_linea_pdf(texto: &str, font_size: f64) -> f64 {
+    texto.chars().count() as f64 * font_size * 0.52
+}
+
+fn crear_xobject_imagen_pdf(
+    doc: &mut lopdf::Document,
+    datos_imagen: &[u8],
+) -> Result<(lopdf::ObjectId, String), String> {
+    let imagen_dyn =
+        image::load_from_memory(datos_imagen).map_err(|e| format!("Decodificacion: {e}"))?;
+    let rgb = imagen_dyn.to_rgb8();
+    let (ancho, alto) = rgb.dimensions();
+    let pixeles_raw = rgb.into_raw();
+
+    let img_dict = lopdf::dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => ancho as i64,
+        "Height" => alto as i64,
+        "ColorSpace" => "DeviceRGB",
+        "BitsPerComponent" => 8,
+    };
+
+    let img_stream = lopdf::Stream::new(img_dict, pixeles_raw);
+    let xobj_id = doc.add_object(img_stream);
+    Ok((xobj_id, format!("Im{}", xobj_id.0)))
 }
 
 fn latex_elemento(

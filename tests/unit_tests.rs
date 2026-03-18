@@ -404,7 +404,7 @@ mod exporter_tests {
         TableCell, TableStructure,
     };
     use ocrfast::infrastructure::exporters::{
-        DocxExporter, JsonExporter, LatexExporter, TxtExporter,
+        DocxExporter, JsonExporter, LatexExporter, PdfReconstructedExporter, TxtExporter,
     };
     use ocrfast::interfaces::ports::ExporterPort;
     use std::collections::HashMap;
@@ -751,6 +751,70 @@ mod exporter_tests {
         assert!(
             assets.join("page1_element3.png").exists(),
             "La figura recortada debe persistirse como asset externo"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_genera_pdf_visible_con_xobject() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter.export(&job_con_tabla(true), &ruta).unwrap();
+
+        assert!(ruta.exists(), "El archivo PDF debe existir");
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let paginas = pdf.get_pages();
+        assert_eq!(
+            paginas.len(),
+            1,
+            "La salida de prueba debe tener una pagina"
+        );
+
+        let (&_numero_pagina, &page_id) = paginas
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe poder decodificarse");
+        let contenido_pdf = String::from_utf8_lossy(&contenido);
+        assert!(
+            contenido_pdf.contains(" Tj")
+                || contenido_pdf.contains(" TJ")
+                || contenido_pdf.contains("Tj\n"),
+            "El PDF reconstruido debe contener operaciones de texto visibles"
+        );
+        assert!(
+            !contenido_pdf.contains(" Tr "),
+            "El PDF reconstruido no debe depender de texto invisible"
+        );
+
+        let pagina = pdf
+            .get_dictionary(page_id)
+            .expect("La pagina debe exponer su diccionario");
+        let recursos_ref = pagina
+            .get(b"Resources")
+            .expect("La pagina debe tener recursos");
+        let recursos = recursos_ref
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .or_else(|| recursos_ref.as_dict().ok().cloned())
+            .expect("Los recursos de la pagina deben resolverse");
+        let xobjects = recursos
+            .get(b"XObject")
+            .ok()
+            .and_then(|obj| obj.as_dict().ok())
+            .expect("El PDF reconstruido debe registrar al menos un XObject");
+        assert!(
+            !xobjects.is_empty(),
+            "La pagina debe contener el recorte de imagen del original"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

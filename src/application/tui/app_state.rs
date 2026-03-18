@@ -1,7 +1,7 @@
 use crate::application::pipeline::{OcrPipeline, PipelineEvent, MSG_JOB_CANCELADO};
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
 use crate::infrastructure::exporters::{
-    DocxExporter, JsonExporter, LatexExporter, PdfSandwichExporter, TxtExporter,
+    DocxExporter, JsonExporter, LatexExporter, PdfReconstructedExporter, TxtExporter,
 };
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
 use crate::infrastructure::postprocessors::TextPostprocessor;
@@ -802,9 +802,9 @@ impl AppState {
         self.exportar_trabajo_seleccionado(JsonExporter::new(), "JSON", "json");
     }
 
-    /// Exporta el trabajo seleccionado a PDF sandwich.
+    /// Exporta el trabajo seleccionado a PDF reconstruido.
     pub fn exportar_trabajo_pdf(&mut self) {
-        self.exportar_trabajo_seleccionado(PdfSandwichExporter::new(), "PDF", "pdf");
+        self.exportar_trabajo_seleccionado(PdfReconstructedExporter::new(), "PDF", "pdf");
     }
 
     fn exportar_trabajo_seleccionado<E: ExporterPort>(
@@ -923,7 +923,7 @@ fn exportar_segun_formato(
         OutputFormat::Txt => TxtExporter::new().export(job, ruta).map_err(|e| e.into()),
         OutputFormat::Docx => DocxExporter::new().export(job, ruta).map_err(|e| e.into()),
         OutputFormat::Latex => LatexExporter::new().export(job, ruta).map_err(|e| e.into()),
-        OutputFormat::Pdf => PdfSandwichExporter::new()
+        OutputFormat::Pdf => PdfReconstructedExporter::new()
             .export(job, ruta)
             .map_err(|e| e.into()),
         OutputFormat::Json => JsonExporter::new().export(job, ruta).map_err(|e| e.into()),

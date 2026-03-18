@@ -614,7 +614,7 @@ fn renderizar_ayuda(marco: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  p         ", Style::default().fg(Color::Yellow)),
-            Span::raw("Exportar como PDF sandwich (.pdf)"),
+            Span::raw("Exportar como PDF reconstruido (.pdf)"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
