@@ -87,6 +87,12 @@ pub struct StyleHints {
     pub emphasis: EmphasisHint,
     /// Escala relativa de fuente respecto al cuerpo base.
     pub font_scale: f32,
+    /// Espaciado vertical previo sugerido para reflujo editable.
+    pub spacing_before_pt: f32,
+    /// Sangría izquierda sugerida dentro de la banda o columna activa.
+    pub left_indent_pt: f32,
+    /// Indica si conviene mantener el siguiente bloque junto al actual.
+    pub keep_with_next: bool,
     /// Indica si el exportador debe preservar posición más que reflujo textual.
     pub preserve_positioning: bool,
 }

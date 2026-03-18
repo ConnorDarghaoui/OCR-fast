@@ -548,6 +548,103 @@ mod exporter_tests {
         }
     }
 
+    fn job_dos_columnas() -> Job {
+        Job {
+            id: "job-cols".to_string(),
+            document: Document {
+                id: "exp-cols".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/cols.png"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 1200,
+                        height: 1600,
+                    },
+                    image_data: Some(png_color_sintetico(1200, 1600, [250, 250, 250])),
+                    blocks: vec![
+                        Block {
+                            block_type: BlockType::Title,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 60,
+                                width: 960,
+                                height: 90,
+                            },
+                            content: "Articulo".to_string(),
+                            confidence: 0.99,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 0,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 240,
+                                width: 380,
+                                height: 180,
+                            },
+                            content: "columna izquierda uno".to_string(),
+                            confidence: 0.95,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 1,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 460,
+                                width: 380,
+                                height: 180,
+                            },
+                            content: "columna izquierda dos".to_string(),
+                            confidence: 0.95,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 2,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 700,
+                                y: 240,
+                                width: 380,
+                                height: 180,
+                            },
+                            content: "columna derecha uno".to_string(),
+                            confidence: 0.95,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 3,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 700,
+                                y: 460,
+                                width: 380,
+                                height: 180,
+                            },
+                            content: "columna derecha dos".to_string(),
+                            confidence: 0.95,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 4,
+                        },
+                    ],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
     #[test]
     fn test_txt_exporter_tabla_con_estructura_usa_texto_plano() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_txt");
@@ -598,6 +695,26 @@ mod exporter_tests {
                 .windows("Informe".len())
                 .any(|w| w == "Informe".as_bytes()),
             "El XML del documento debe contener el titulo exportado"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_docx_exporter_materializa_banda_de_columnas() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_docx_cols");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.docx");
+
+        let exporter = DocxExporter::new();
+        exporter.export(&job_dos_columnas(), &ruta).unwrap();
+
+        let contenido = std::fs::read(&ruta).unwrap();
+        assert!(
+            contenido
+                .windows("column-layout".len())
+                .any(|window| window == b"column-layout"),
+            "El DOCX debe incluir la banda columnar marcada en el XML"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -41,13 +41,42 @@ impl HighFidelityBlueprintBuilder {
         let total_columnas = estimar_columnas(&pagina.blocks, pagina.dimensions.width);
         let bloques_ordenados =
             ordenar_bloques_para_lectura(&pagina.blocks, pagina.dimensions.width);
-        let elementos = bloques_ordenados
-            .into_iter()
-            .enumerate()
-            .map(|(indice, bloque)| {
-                construir_elemento(pagina, bloque, indice as u32, total_columnas)
-            })
-            .collect();
+        let bases_columna = inferir_bases_columna(&bloques_ordenados, pagina.dimensions.width);
+        let mut elementos = Vec::with_capacity(bloques_ordenados.len());
+
+        for (indice, bloque) in bloques_ordenados.iter().enumerate() {
+            let orden_lectura = indice as u32;
+            let rol = mapear_rol(bloque.block_type);
+            let usa_dos_columnas =
+                total_columnas == 2 && !es_ancla_visual(bloque, pagina.dimensions.width);
+            let columnas_elemento = if usa_dos_columnas { 2 } else { 1 };
+            let indice_columna =
+                if usa_dos_columnas && centro_x(bloque) > pagina.dimensions.width / 2 {
+                    1
+                } else {
+                    0
+                };
+            let spacing_before_pt = inferir_espaciado_previo(
+                &bloques_ordenados,
+                indice,
+                pagina.dimensions.width,
+                columnas_elemento,
+                indice_columna,
+            );
+            let left_indent_pt =
+                inferir_indentacion_pt(*bloque, indice_columna, columnas_elemento, &bases_columna);
+
+            elementos.push(construir_elemento(
+                pagina,
+                bloque,
+                rol,
+                orden_lectura,
+                indice_columna,
+                columnas_elemento,
+                spacing_before_pt,
+                left_indent_pt,
+            ));
+        }
 
         Ok(PageBlueprint {
             number: pagina.number,
@@ -158,19 +187,13 @@ fn ordenar_segmento_en_columnas<'a>(bloques: Vec<&'a Block>, ancho_pagina: u32) 
 fn construir_elemento(
     pagina: &Page,
     bloque: &Block,
+    rol: ElementRole,
     orden_lectura: u32,
-    total_columnas_pagina: u32,
+    indice_columna: u32,
+    total_columnas: u32,
+    spacing_before_pt: f32,
+    left_indent_pt: f32,
 ) -> ElementBlueprint {
-    let rol = mapear_rol(bloque.block_type);
-    let usa_dos_columnas =
-        total_columnas_pagina == 2 && !es_ancla_visual(bloque, pagina.dimensions.width);
-    let total_columnas = if usa_dos_columnas { 2 } else { 1 };
-    let indice_columna = if usa_dos_columnas && centro_x(bloque) > pagina.dimensions.width / 2 {
-        1
-    } else {
-        0
-    };
-
     ElementBlueprint {
         role: rol,
         bounding_box: bloque.bounding_box.clone(),
@@ -180,7 +203,14 @@ fn construir_elemento(
         text: bloque.content.clone(),
         table: bloque.table_structure.clone(),
         image_crop: construir_referencia_imagen(pagina.number, bloque, rol),
-        style: inferir_estilo(pagina, bloque, rol, total_columnas),
+        style: inferir_estilo(
+            pagina,
+            bloque,
+            rol,
+            total_columnas,
+            spacing_before_pt,
+            left_indent_pt,
+        ),
     }
 }
 
@@ -207,6 +237,8 @@ fn inferir_estilo(
     bloque: &Block,
     rol: ElementRole,
     total_columnas: u32,
+    spacing_before_pt: f32,
+    left_indent_pt: f32,
 ) -> StyleHints {
     let ancho_pagina = pagina.dimensions.width.max(1);
     let alto_pagina = pagina.dimensions.height.max(1);
@@ -254,8 +286,99 @@ fn inferir_estilo(
         alignment: alineacion,
         emphasis,
         font_scale,
+        spacing_before_pt,
+        left_indent_pt,
+        keep_with_next: matches!(rol, ElementRole::Title | ElementRole::Separator),
         preserve_positioning,
     }
+}
+
+fn inferir_bases_columna(bloques: &[&Block], ancho_pagina: u32) -> [u32; 2] {
+    let mut base_izquierda = ancho_pagina;
+    let mut base_derecha = ancho_pagina;
+
+    for bloque in bloques {
+        if es_ancla_visual(bloque, ancho_pagina) {
+            continue;
+        }
+
+        if centro_x(bloque) <= ancho_pagina / 2 {
+            base_izquierda = base_izquierda.min(bloque.bounding_box.x);
+        } else {
+            base_derecha = base_derecha.min(bloque.bounding_box.x);
+        }
+    }
+
+    if base_izquierda == ancho_pagina {
+        base_izquierda = 0;
+    }
+    if base_derecha == ancho_pagina {
+        base_derecha = ancho_pagina / 2;
+    }
+
+    [base_izquierda, base_derecha]
+}
+
+fn inferir_espaciado_previo(
+    bloques: &[&Block],
+    indice_actual: usize,
+    ancho_pagina: u32,
+    total_columnas: u32,
+    indice_columna: u32,
+) -> f32 {
+    if indice_actual == 0 {
+        return 0.0;
+    }
+
+    let actual = bloques[indice_actual];
+
+    for previo in bloques[..indice_actual].iter().rev() {
+        let columnas_previas = if es_ancla_visual(previo, ancho_pagina) {
+            1
+        } else {
+            total_columnas
+        };
+        let columna_previa = indice_columna_bloque(previo, columnas_previas, ancho_pagina);
+
+        if columnas_previas != total_columnas || columna_previa != indice_columna {
+            continue;
+        }
+
+        let fin_previo = previo
+            .bounding_box
+            .y
+            .saturating_add(previo.bounding_box.height);
+        let gap_px = actual.bounding_box.y.saturating_sub(fin_previo);
+        return px_a_pt_local(gap_px).clamp(0.0, 32.0) as f32;
+    }
+
+    0.0
+}
+
+fn indice_columna_bloque(bloque: &Block, total_columnas: u32, ancho_pagina: u32) -> u32 {
+    if total_columnas == 2 && centro_x(bloque) > ancho_pagina / 2 {
+        1
+    } else {
+        0
+    }
+}
+
+fn inferir_indentacion_pt(
+    bloque: &Block,
+    indice_columna: u32,
+    total_columnas: u32,
+    bases_columna: &[u32; 2],
+) -> f32 {
+    if total_columnas == 1 {
+        return 0.0;
+    }
+
+    let base_x = bases_columna[indice_columna as usize];
+    px_a_pt_local(bloque.bounding_box.x.saturating_sub(base_x)) as f32
+}
+
+fn px_a_pt_local(px: u32) -> f64 {
+    (px as f64) * (72.0 / 150.0)
 }
 
 fn estimar_columnas(bloques: &[Block], ancho_pagina: u32) -> u32 {

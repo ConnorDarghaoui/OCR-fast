@@ -69,6 +69,7 @@ fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
     let pagina = &blueprint.pages[0];
     assert_eq!(pagina.elements[0].role, ElementRole::Title);
     assert_eq!(pagina.elements[0].total_columns, 1);
+    assert!(pagina.elements[0].style.keep_with_next);
 
     let parrafos: Vec<_> = pagina
         .elements
@@ -98,6 +99,15 @@ fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
         .iter()
         .find(|elemento| elemento.role == ElementRole::Figure)
         .expect("Debe existir un bloque de figura");
+    let segundo_parrafo = pagina
+        .elements
+        .iter()
+        .find(|elemento| elemento.text == "izquierda inferior")
+        .expect("Debe existir el segundo párrafo");
+    assert!(
+        segundo_parrafo.style.spacing_before_pt > 0.0,
+        "El blueprint debe inferir separación vertical entre párrafos consecutivos"
+    );
 
     let recorte = figura
         .image_crop

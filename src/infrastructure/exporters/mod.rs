@@ -147,17 +147,14 @@ impl ExporterPort for DocxExporter {
         let mut contador_docpr = 1u32;
 
         for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
-            for elemento in &pagina.elements {
-                cuerpo.push_str(&docx_xml_elemento(
-                    job,
-                    pagina,
-                    elemento,
-                    &mut relaciones_imagen,
-                    &mut media,
-                    &mut contador_rel,
-                    &mut contador_docpr,
-                )?);
-            }
+            cuerpo.push_str(&docx_xml_pagina(
+                job,
+                pagina,
+                &mut relaciones_imagen,
+                &mut media,
+                &mut contador_rel,
+                &mut contador_docpr,
+            )?);
 
             if indice_pagina + 1 < blueprint.pages.len() {
                 cuerpo.push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
@@ -578,7 +575,7 @@ fn px_a_pt(px: u32) -> f64 {
 }
 
 fn pt_a_twips(pt: f64) -> u32 {
-    (pt * 20.0).round().max(1.0) as u32
+    (pt * 20.0).round().max(0.0) as u32
 }
 
 fn obtener_pagina<'a>(job: &'a Job, numero_pagina: u32) -> Result<&'a Page, ExportError> {
@@ -805,9 +802,7 @@ fn docx_xml_elemento(
                     }
                     Err(_) => Ok(docx_xml_parrafo(
                         "Imagen omitida: raster no disponible en memoria",
-                        elemento.style.alignment,
-                        EmphasisHint::Neutral,
-                        1.0,
+                        &elemento.style,
                     )),
                 }
             } else {
@@ -818,52 +813,160 @@ fn docx_xml_elemento(
             if let Some(ref tabla) = elemento.table {
                 Ok(docx_xml_tabla(tabla))
             } else {
-                Ok(docx_xml_parrafo(
-                    &elemento.text,
-                    elemento.style.alignment,
-                    elemento.style.emphasis,
-                    elemento.style.font_scale,
-                ))
+                Ok(docx_xml_parrafo(&elemento.text, &elemento.style))
             }
         }
-        _ => Ok(docx_xml_parrafo(
-            &elemento.text,
-            elemento.style.alignment,
-            elemento.style.emphasis,
-            elemento.style.font_scale,
-        )),
+        _ => Ok(docx_xml_parrafo(&elemento.text, &elemento.style)),
     }
 }
 
-fn docx_xml_parrafo(
-    texto: &str,
-    alineacion: AlignmentHint,
-    emphasis: EmphasisHint,
-    escala_fuente: f32,
-) -> String {
+fn docx_xml_pagina(
+    job: &Job,
+    pagina: &crate::domain::PageBlueprint,
+    relaciones_imagen: &mut Vec<(String, String)>,
+    media: &mut Vec<(String, Vec<u8>)>,
+    contador_rel: &mut usize,
+    contador_docpr: &mut u32,
+) -> Result<String, ExportError> {
+    let mut xml = String::new();
+    let mut columnares: Vec<&ElementBlueprint> = Vec::new();
+
+    for elemento in &pagina.elements {
+        if elemento.total_columns == 2 {
+            columnares.push(elemento);
+            continue;
+        }
+
+        if !columnares.is_empty() {
+            xml.push_str(&docx_xml_banda_columnas(
+                job,
+                pagina,
+                &columnares,
+                relaciones_imagen,
+                media,
+                contador_rel,
+                contador_docpr,
+            )?);
+            columnares.clear();
+        }
+
+        xml.push_str(&docx_xml_elemento(
+            job,
+            pagina,
+            elemento,
+            relaciones_imagen,
+            media,
+            contador_rel,
+            contador_docpr,
+        )?);
+    }
+
+    if !columnares.is_empty() {
+        xml.push_str(&docx_xml_banda_columnas(
+            job,
+            pagina,
+            &columnares,
+            relaciones_imagen,
+            media,
+            contador_rel,
+            contador_docpr,
+        )?);
+    }
+
+    Ok(xml)
+}
+
+fn docx_xml_banda_columnas(
+    job: &Job,
+    pagina: &crate::domain::PageBlueprint,
+    elementos: &[&ElementBlueprint],
+    relaciones_imagen: &mut Vec<(String, String)>,
+    media: &mut Vec<(String, Vec<u8>)>,
+    contador_rel: &mut usize,
+    contador_docpr: &mut u32,
+) -> Result<String, ExportError> {
+    let mut izquierda = String::new();
+    let mut derecha = String::new();
+
+    for elemento in elementos {
+        let xml = docx_xml_elemento(
+            job,
+            pagina,
+            elemento,
+            relaciones_imagen,
+            media,
+            contador_rel,
+            contador_docpr,
+        )?;
+        if elemento.column_index == 0 {
+            izquierda.push_str(&xml);
+        } else {
+            derecha.push_str(&xml);
+        }
+    }
+
+    if izquierda.is_empty() {
+        izquierda.push_str("<w:p/>");
+    } else {
+        izquierda.push_str("<w:p/>");
+    }
+    if derecha.is_empty() {
+        derecha.push_str("<w:p/>");
+    } else {
+        derecha.push_str("<w:p/>");
+    }
+
+    Ok(format!(
+        concat!(
+            "<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/>",
+            "<w:tblDescription w:val=\"column-layout\"/>",
+            "<w:tblBorders><w:top w:val=\"nil\"/><w:left w:val=\"nil\"/>",
+            "<w:bottom w:val=\"nil\"/><w:right w:val=\"nil\"/>",
+            "<w:insideH w:val=\"nil\"/><w:insideV w:val=\"nil\"/></w:tblBorders>",
+            "</w:tblPr><w:tr>",
+            "<w:tc><w:tcPr><w:tcW w:w=\"5000\" w:type=\"pct\"/></w:tcPr>{}</w:tc>",
+            "<w:tc><w:tcPr><w:tcW w:w=\"5000\" w:type=\"pct\"/></w:tcPr>{}</w:tc>",
+            "</w:tr></w:tbl>"
+        ),
+        izquierda, derecha
+    ))
+}
+
+fn docx_xml_parrafo(texto: &str, estilo: &crate::domain::StyleHints) -> String {
     if texto.trim().is_empty() {
         return String::new();
     }
 
-    let half_points = ((11.0 * escala_fuente as f64).clamp(9.0, 26.0) * 2.0).round() as u32;
-    let alineacion_xml = match alineacion {
+    let half_points = ((11.0 * estilo.font_scale as f64).clamp(9.0, 26.0) * 2.0).round() as u32;
+    let alineacion_xml = match estilo.alignment {
         AlignmentHint::Left | AlignmentHint::FullWidth => "left",
         AlignmentHint::Center => "center",
         AlignmentHint::Right => "right",
     };
-    let bold = if emphasis == EmphasisHint::Strong {
+    let bold = if estilo.emphasis == EmphasisHint::Strong {
         "<w:b/>"
     } else {
         ""
     };
+    let keep_next = if estilo.keep_with_next {
+        "<w:keepNext/>"
+    } else {
+        ""
+    };
+    let spacing_before = pt_a_twips(estilo.spacing_before_pt as f64);
+    let left_indent = pt_a_twips(estilo.left_indent_pt as f64);
 
     format!(
         concat!(
-            "<w:p><w:pPr><w:jc w:val=\"{}\"/></w:pPr>",
+            "<w:p><w:pPr>{}<w:jc w:val=\"{}\"/><w:spacing w:before=\"{}\" w:after=\"80\"/>",
+            "<w:ind w:left=\"{}\"/></w:pPr>",
             "<w:r><w:rPr>{}<w:sz w:val=\"{}\"/></w:rPr>",
             "<w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>"
         ),
+        keep_next,
         alineacion_xml,
+        spacing_before,
+        left_indent,
         bold,
         half_points,
         escape_xml(texto)
