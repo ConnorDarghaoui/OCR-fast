@@ -3,8 +3,8 @@ pub mod refinement;
 
 use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
 use crate::interfaces::ports::{
-    DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort, OcrEnginePort,
-    PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
+    DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort,
+    OcrEnginePort, PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
 };
 pub use refinement::{
     ConfidenceBoostPass, DenoisePass, DeskewPass, NoopRefinementPass, RefinementBudget,
@@ -13,14 +13,58 @@ pub use refinement::{
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use thiserror::Error;
 
-/// Mensaje canónico usado para mapear cancelación cooperativa a estado de UI.
+/// Fases operativas del pipeline usadas para tipar fallos terminales.
 ///
-/// Se mantiene como constante pública porque pipeline y TUI viven en módulos
-/// distintos y ambos necesitan una convención estable sin introducir un tipo de
-/// error adicional solo para cancelación. Es una decisión pragmática: reduce
-/// complejidad del canal a costa de depender de una cadena sentinela.
-pub const MSG_JOB_CANCELADO: &str = "Job cancelado por el usuario";
+/// Mantener la fase como enum evita depender de mensajes libres para auditoría,
+/// persistencia o decisiones de reintento en capas superiores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineStage {
+    Parseo,
+    Preprocesamiento,
+    Layout,
+    Ocr,
+    Tablas,
+    Postproceso,
+    Ensamblado,
+    Blueprint,
+}
+
+impl std::fmt::Display for PipelineStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let nombre = match self {
+            Self::Parseo => "parseo",
+            Self::Preprocesamiento => "preprocesamiento",
+            Self::Layout => "layout",
+            Self::Ocr => "ocr",
+            Self::Tablas => "tablas",
+            Self::Postproceso => "postproceso",
+            Self::Ensamblado => "ensamblado",
+            Self::Blueprint => "blueprint",
+        };
+
+        f.write_str(nombre)
+    }
+}
+
+/// Error terminal tipado del pipeline OCR.
+///
+/// `Cancelado` modela una salida cooperativa esperable, mientras `Fase` conserva
+/// la etapa de fallo para mejorar trazabilidad y decisiones de recuperación.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PipelineFailure {
+    /// Cancelación solicitada por el usuario y observada en una frontera segura.
+    #[error("Job cancelado por el usuario")]
+    Cancelado,
+
+    /// Fallo terminal producido por una fase concreta del pipeline.
+    #[error("error en fase {fase}: {mensaje}")]
+    Fase {
+        fase: PipelineStage,
+        mensaje: String,
+    },
+}
 
 /// Eventos emitidos por el pipeline hacia la TUI mediante `mpsc`.
 ///
@@ -50,7 +94,7 @@ pub enum PipelineEvent {
     /// pipeline corre en un thread separado sin acceso directo a `AppState`.
     Completado(Document),
 
-    Error(String),
+    Error(PipelineFailure),
 }
 
 /// Resultado enriquecido del pipeline OCR completo.
@@ -88,6 +132,7 @@ pub struct OcrPipeline {
     blueprint_builder: Option<Arc<dyn DocumentBlueprintBuilderPort>>,
     refinement_passes: Vec<Arc<dyn RefinementPass>>,
     refinement_budget: RefinementBudget,
+    ensamblador_documento: Option<Arc<dyn DocumentAssemblerPort>>,
 }
 
 impl OcrPipeline {
@@ -109,6 +154,7 @@ impl OcrPipeline {
             blueprint_builder: None,
             refinement_passes: Vec::new(),
             refinement_budget: RefinementBudget::default(),
+            ensamblador_documento: None,
         }
     }
 
@@ -157,6 +203,15 @@ impl OcrPipeline {
         self
     }
 
+    /// Añade una fase final que reconstruye el documento guiándose por layout.
+    pub fn with_document_assembler(
+        mut self,
+        ensamblador_documento: Arc<dyn DocumentAssemblerPort>,
+    ) -> Self {
+        self.ensamblador_documento = Some(ensamblador_documento);
+        self
+    }
+
     /// Ejecuta el pipeline completo sobre un recurso de entrada.
     ///
     /// La ejecución es secuencial y cooperativa: cada fase transforma el mismo
@@ -167,8 +222,8 @@ impl OcrPipeline {
     /// # Errors
     ///
     /// Propaga cualquier error de parsing, preprocesamiento, layout, OCR, tablas
-    /// o postproceso. La cancelación se materializa como error sentinela con el
-    /// mensaje `MSG_JOB_CANCELADO`.
+    /// o postproceso como `PipelineFailure::Fase`. La cancelación se materializa
+    /// como `PipelineFailure::Cancelado`.
     ///
     /// # Concurrency
     ///
@@ -186,7 +241,7 @@ impl OcrPipeline {
         perfil: &ProcessingProfile,
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<Document, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Document, PipelineFailure> {
         self.procesar_documento_con_blueprint(ruta, perfil, notificador, cancelacion)
             .map(|resultado| resultado.document)
     }
@@ -203,7 +258,7 @@ impl OcrPipeline {
         perfil: &ProcessingProfile,
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<PipelineResult, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<PipelineResult, PipelineFailure> {
         let mut refinement_consumidos = 0usize;
         self.notificar(
             notificador,
@@ -213,7 +268,10 @@ impl OcrPipeline {
             },
         );
 
-        let mut documento = self.parser.parse(ruta)?;
+        let mut documento = self
+            .parser
+            .parse(ruta)
+            .map_err(|error| Self::error_fase(PipelineStage::Parseo, error))?;
         let total_paginas = documento.pages.len() as u32;
         log::info!("Pipeline: documento parseado ({} paginas)", total_paginas);
 
@@ -227,7 +285,9 @@ impl OcrPipeline {
                     progreso: 0.15,
                 },
             );
-            preprocesador.preprocess(&mut documento)?;
+            preprocesador
+                .preprocess(&mut documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Preprocesamiento, error))?;
             log::info!("Pipeline: preprocesamiento completado");
         }
 
@@ -252,7 +312,9 @@ impl OcrPipeline {
                 },
             );
             for (i, pagina) in documento.pages.iter_mut().enumerate() {
-                let bloques = layout_engine.analyze(pagina)?;
+                let bloques = layout_engine
+                    .analyze(pagina)
+                    .map_err(|error| Self::error_fase(PipelineStage::Layout, error))?;
                 pagina.blocks = bloques;
                 self.notificar(
                     notificador,
@@ -274,7 +336,9 @@ impl OcrPipeline {
                 progreso: 0.50,
             },
         );
-        self.ocr_engine.process(&mut documento, perfil)?;
+        self.ocr_engine
+            .process(&mut documento, perfil)
+            .map_err(|error| Self::error_fase(PipelineStage::Ocr, error))?;
         log::info!("Pipeline: OCR completado ({})", self.ocr_engine.name());
 
         self.verificar_cancelacion(cancelacion)?;
@@ -292,7 +356,9 @@ impl OcrPipeline {
                         progreso: 0.75,
                     },
                 );
-                table_analyzer.analyze_tables(&mut documento)?;
+                table_analyzer
+                    .analyze_tables(&mut documento)
+                    .map_err(|error| Self::error_fase(PipelineStage::Tablas, error))?;
                 log::info!("Pipeline: tablas completado ({})", table_analyzer.name());
             }
         }
@@ -307,7 +373,9 @@ impl OcrPipeline {
                     progreso: 0.90,
                 },
             );
-            postprocesador.postprocess(&mut documento)?;
+            postprocesador
+                .postprocess(&mut documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Postproceso, error))?;
             log::info!("Pipeline: postprocesamiento completado");
         }
 
@@ -322,15 +390,36 @@ impl OcrPipeline {
             &mut refinement_consumidos,
         )?;
 
-        blueprint = if let Some(ref blueprint_builder) = self.blueprint_builder {
+        if let Some(ref ensamblador_documento) = self.ensamblador_documento {
+            self.notificar(
+                notificador,
+                PipelineEvent::FaseCambiada {
+                    fase: "Reconstruyendo documento final".to_string(),
+                    progreso: 0.95,
+                },
+            );
+            ensamblador_documento
+                .assemble(&mut documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Ensamblado, error))?;
+            log::info!(
+                "Pipeline: ensamblado final completado ({})",
+                ensamblador_documento.name()
+            );
+        }
+
+        self.verificar_cancelacion(cancelacion)?;
+
+        let mut blueprint = if let Some(ref blueprint_builder) = self.blueprint_builder {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
                     fase: "Reconstruyendo blueprint visual".to_string(),
-                    progreso: 0.96,
+                    progreso: 0.97,
                 },
             );
-            let blueprint = blueprint_builder.build_blueprint(&documento)?;
+            let blueprint = blueprint_builder
+                .build_blueprint(&documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
             log::info!(
                 "Pipeline: blueprint visual completado ({})",
                 blueprint_builder.name()
@@ -367,11 +456,21 @@ impl OcrPipeline {
     fn verificar_cancelacion(
         &self,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), PipelineFailure> {
         if cancelacion.map_or(false, |f| f.load(Ordering::Relaxed)) {
-            return Err(MSG_JOB_CANCELADO.into());
+            return Err(PipelineFailure::Cancelado);
         }
         Ok(())
+    }
+
+    fn error_fase(
+        fase: PipelineStage,
+        error: impl std::error::Error + Send + Sync + 'static,
+    ) -> PipelineFailure {
+        PipelineFailure::Fase {
+            fase,
+            mensaje: error.to_string(),
+        }
     }
 
     fn notificar(
@@ -393,7 +492,7 @@ impl OcrPipeline {
         perfil: &ProcessingProfile,
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         refinement_consumidos: &mut usize,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), PipelineFailure> {
         if self.refinement_passes.is_empty() {
             return Ok(());
         }
@@ -429,7 +528,9 @@ impl OcrPipeline {
                 remaining_passes: self.refinement_budget.remaining(*refinement_consumidos),
             };
 
-            refinement_pass.refine(documento, blueprint, &contexto)?;
+            refinement_pass
+                .refine(documento, blueprint, &contexto)
+                .map_err(|error| Self::error_refinamiento(stage, refinement_pass.name(), error))?;
             *refinement_consumidos += 1;
             log::info!(
                 "Pipeline: refinamiento completado ({})",
@@ -438,6 +539,23 @@ impl OcrPipeline {
         }
 
         Ok(())
+    }
+
+    fn error_refinamiento(
+        stage: RefinementStage,
+        nombre_pass: &str,
+        error: Box<dyn std::error::Error + Send + Sync>,
+    ) -> PipelineFailure {
+        let fase = match stage {
+            RefinementStage::BeforeLayout => PipelineStage::Preprocesamiento,
+            RefinementStage::BeforeBlueprint => PipelineStage::Postproceso,
+            RefinementStage::AfterBlueprint => PipelineStage::Blueprint,
+        };
+
+        PipelineFailure::Fase {
+            fase,
+            mensaje: format!("refinamiento {nombre_pass}: {error}"),
+        }
     }
 }
 
