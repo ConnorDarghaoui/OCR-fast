@@ -186,6 +186,17 @@ pub trait TableAnalyzerPort: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// Contrato para ensamblar el documento final a partir del layout detectado.
+///
+/// Esta fase toma bloques ya segmentados y enriquecidos por OCR para imponer una
+/// secuencia de lectura canónica antes de exportar o serializar resultados.
+pub trait DocumentAssemblerPort: Send + Sync {
+    /// Reordena y normaliza el documento para consumo final.
+    fn assemble(&self, document: &mut Document) -> Result<(), LayoutError>;
+    /// Identificador estable del ensamblador para logs y diagnóstico.
+    fn name(&self) -> &str;
+}
+
 /// Contrato para asegurar disponibilidad de artefactos de inferencia.
 ///
 /// Modelos ONNX son un problema operativo aparte: implican red, integridad,

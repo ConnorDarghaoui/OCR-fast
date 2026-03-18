@@ -1,7 +1,7 @@
 use crate::domain::{BlockType, Document, ProcessingProfile};
 use crate::interfaces::ports::{
-    DocumentParserPort, LayoutEnginePort, OcrEnginePort, PostprocessorPort, PreprocessorPort,
-    TableAnalyzerPort,
+    DocumentAssemblerPort, DocumentParserPort, LayoutEnginePort, OcrEnginePort, PostprocessorPort,
+    PreprocessorPort, TableAnalyzerPort,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -20,6 +20,7 @@ pub enum PipelineStage {
     Ocr,
     Tablas,
     Postproceso,
+    Ensamblado,
 }
 
 impl std::fmt::Display for PipelineStage {
@@ -31,6 +32,7 @@ impl std::fmt::Display for PipelineStage {
             Self::Ocr => "ocr",
             Self::Tablas => "tablas",
             Self::Postproceso => "postproceso",
+            Self::Ensamblado => "ensamblado",
         };
 
         f.write_str(nombre)
@@ -105,6 +107,7 @@ pub struct OcrPipeline {
     ocr_engine: Arc<dyn OcrEnginePort>,
     table_analyzer: Option<Arc<dyn TableAnalyzerPort>>,
     postprocesador: Option<Arc<dyn PostprocessorPort>>,
+    ensamblador_documento: Option<Arc<dyn DocumentAssemblerPort>>,
 }
 
 impl OcrPipeline {
@@ -123,6 +126,7 @@ impl OcrPipeline {
             ocr_engine,
             table_analyzer: None,
             postprocesador: None,
+            ensamblador_documento: None,
         }
     }
 
@@ -147,6 +151,15 @@ impl OcrPipeline {
     /// Añade una fase de postproceso textual posterior a la inferencia.
     pub fn with_postprocessor(mut self, postprocesador: Arc<dyn PostprocessorPort>) -> Self {
         self.postprocesador = Some(postprocesador);
+        self
+    }
+
+    /// Añade una fase final que reconstruye el documento guiándose por layout.
+    pub fn with_document_assembler(
+        mut self,
+        ensamblador_documento: Arc<dyn DocumentAssemblerPort>,
+    ) -> Self {
+        self.ensamblador_documento = Some(ensamblador_documento);
         self
     }
 
@@ -287,6 +300,23 @@ impl OcrPipeline {
                 .postprocess(&mut documento)
                 .map_err(|error| Self::error_fase(PipelineStage::Postproceso, error))?;
             log::info!("Pipeline: postprocesamiento completado");
+        }
+
+        if let Some(ref ensamblador_documento) = self.ensamblador_documento {
+            self.notificar(
+                notificador,
+                PipelineEvent::FaseCambiada {
+                    fase: "Reconstruyendo documento final".to_string(),
+                    progreso: 0.97,
+                },
+            );
+            ensamblador_documento
+                .assemble(&mut documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Ensamblado, error))?;
+            log::info!(
+                "Pipeline: ensamblado final completado ({})",
+                ensamblador_documento.name()
+            );
         }
 
         self.notificar(
