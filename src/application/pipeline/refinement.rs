@@ -16,6 +16,8 @@ pub type RefinementError = Box<dyn std::error::Error + Send + Sync>;
 pub enum RefinementStage {
     /// Corre sobre el documento parseado y preprocesado, antes de layout.
     BeforeLayout,
+    /// Corre tras OCR, antes de tablas y postproceso.
+    AfterOcr,
     /// Corre tras OCR, tablas y postproceso, antes de construir el blueprint.
     BeforeBlueprint,
     /// Corre sobre el documento ya acompañado por un blueprint visual.
@@ -341,7 +343,7 @@ impl ConfidenceBoostPass {
 
 impl RefinementPass for ConfidenceBoostPass {
     fn stage(&self) -> RefinementStage {
-        RefinementStage::BeforeBlueprint
+        RefinementStage::AfterOcr
     }
 
     fn name(&self) -> &str {
@@ -358,10 +360,32 @@ impl RefinementPass for ConfidenceBoostPass {
             return Ok(());
         }
 
-        let mut retried = document.clone();
+        let mut retried = self.build_retry_document(document);
         self.ocr_engine.process(&mut retried, &self.retry_profile)?;
         self.merge_retry_results(document, &retried);
         Ok(())
+    }
+}
+
+impl ConfidenceBoostPass {
+    fn build_retry_document(&self, document: &Document) -> Document {
+        let pages = document
+            .pages
+            .iter()
+            .filter(|page| {
+                page.blocks
+                    .iter()
+                    .any(|block| is_confidence_eligible(block) && block.confidence < self.threshold)
+            })
+            .cloned()
+            .collect();
+
+        Document {
+            id: document.id.clone(),
+            source_path: document.source_path.clone(),
+            pages,
+            metadata: document.metadata.clone(),
+        }
     }
 }
 

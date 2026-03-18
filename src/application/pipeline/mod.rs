@@ -29,6 +29,7 @@ pub enum PipelineStage {
     Postproceso,
     Ensamblado,
     Blueprint,
+    Refinamiento,
 }
 
 impl std::fmt::Display for PipelineStage {
@@ -42,6 +43,7 @@ impl std::fmt::Display for PipelineStage {
             Self::Postproceso => "postproceso",
             Self::Ensamblado => "ensamblado",
             Self::Blueprint => "blueprint",
+            Self::Refinamiento => "refinamiento",
         };
 
         f.write_str(nombre)
@@ -300,6 +302,7 @@ impl OcrPipeline {
             ruta,
             perfil,
             notificador,
+            cancelacion,
             &mut refinement_consumidos,
         )?;
 
@@ -342,6 +345,16 @@ impl OcrPipeline {
         log::info!("Pipeline: OCR completado ({})", self.ocr_engine.name());
 
         self.verificar_cancelacion(cancelacion)?;
+        self.ejecutar_refinamientos(
+            RefinementStage::AfterOcr,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            cancelacion,
+            &mut refinement_consumidos,
+        )?;
 
         if let Some(ref table_analyzer) = self.table_analyzer {
             let hay_tablas = documento
@@ -387,6 +400,7 @@ impl OcrPipeline {
             ruta,
             perfil,
             notificador,
+            cancelacion,
             &mut refinement_consumidos,
         )?;
 
@@ -436,6 +450,7 @@ impl OcrPipeline {
             ruta,
             perfil,
             notificador,
+            cancelacion,
             &mut refinement_consumidos,
         )?;
 
@@ -491,6 +506,7 @@ impl OcrPipeline {
         ruta: &Path,
         perfil: &ProcessingProfile,
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
+        cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
         refinement_consumidos: &mut usize,
     ) -> Result<(), PipelineFailure> {
         if self.refinement_passes.is_empty() {
@@ -503,6 +519,7 @@ impl OcrPipeline {
             .iter()
             .filter(|pass| pass.stage() == stage)
         {
+            self.verificar_cancelacion(cancelacion)?;
             if !self.refinement_budget.allows(*refinement_consumidos) {
                 log::info!(
                     "Pipeline: presupuesto de refinamiento agotado antes de {}",
@@ -542,18 +559,12 @@ impl OcrPipeline {
     }
 
     fn error_refinamiento(
-        stage: RefinementStage,
+        _stage: RefinementStage,
         nombre_pass: &str,
         error: Box<dyn std::error::Error + Send + Sync>,
     ) -> PipelineFailure {
-        let fase = match stage {
-            RefinementStage::BeforeLayout => PipelineStage::Preprocesamiento,
-            RefinementStage::BeforeBlueprint => PipelineStage::Postproceso,
-            RefinementStage::AfterBlueprint => PipelineStage::Blueprint,
-        };
-
         PipelineFailure::Fase {
-            fase,
+            fase: PipelineStage::Refinamiento,
             mensaje: format!("refinamiento {nombre_pass}: {error}"),
         }
     }
@@ -562,6 +573,7 @@ impl OcrPipeline {
 fn progreso_refinamiento(stage: RefinementStage) -> f32 {
     match stage {
         RefinementStage::BeforeLayout => 0.22,
+        RefinementStage::AfterOcr => 0.62,
         RefinementStage::BeforeBlueprint => 0.93,
         RefinementStage::AfterBlueprint => 0.985,
     }
