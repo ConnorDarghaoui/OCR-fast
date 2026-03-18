@@ -1,12 +1,56 @@
 use crate::domain::errors::ExportError;
-use crate::domain::{BlockType, Job};
-use crate::interfaces::ports::ExporterPort;
+use crate::domain::{BlockType, Job, OutputFormat};
+use crate::interfaces::ports::{ExporterPort, JobExporterPort};
 use lopdf::dictionary;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
+
+/// Registro por defecto que resuelve exportadores concretos según `OutputFormat`.
+///
+/// La resolución vive en infraestructura para que la aplicación no dependa de
+/// constructores concretos ni replique el `match` en múltiples sitios.
+pub struct DefaultJobExporter {
+    markdown: Arc<dyn ExporterPort>,
+    pdf: Arc<dyn ExporterPort>,
+    json: Arc<dyn ExporterPort>,
+}
+
+impl DefaultJobExporter {
+    /// Construye el registro con los exportadores integrados del producto.
+    pub fn new() -> Self {
+        Self {
+            markdown: Arc::new(MarkdownExporter::new()),
+            pdf: Arc::new(PdfSandwichExporter::new()),
+            json: Arc::new(JsonExporter::new()),
+        }
+    }
+
+    /// Resuelve el exportador concreto para el formato indicado.
+    fn exportador_para(&self, formato: OutputFormat) -> &dyn ExporterPort {
+        match formato {
+            OutputFormat::Markdown => self.markdown.as_ref(),
+            OutputFormat::Pdf => self.pdf.as_ref(),
+            OutputFormat::Json => self.json.as_ref(),
+        }
+    }
+}
+
+impl Default for DefaultJobExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl JobExporterPort for DefaultJobExporter {
+    fn export_job(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
+        self.exportador_para(job.formato_salida)
+            .export(job, output_path)
+    }
+}
 
 /// Exportador de documentos OCR a Markdown legible por humanos.
 ///

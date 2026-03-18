@@ -277,6 +277,37 @@ mod infrastructure_tests {
     }
 
     #[test]
+    fn test_file_job_store_crea_directorios_padre() {
+        let directorio = tempfile::tempdir().expect("No se pudo crear directorio temporal");
+        let ruta = directorio
+            .path()
+            .join("estado")
+            .join("interno")
+            .join("jobs.json");
+        let store = FileJobStore::with_path(&ruta);
+
+        store.save(&job_de_prueba("nested-1")).unwrap();
+
+        assert!(ruta.exists());
+        assert!(ruta.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn test_file_job_store_reporta_json_corrupto() {
+        let directorio = tempfile::tempdir().expect("No se pudo crear directorio temporal");
+        let ruta = directorio.path().join("jobs.json");
+        std::fs::write(&ruta, "{ json invalido").expect("No se pudo escribir json corrupto");
+        let store = FileJobStore::with_path(&ruta);
+
+        let error = store
+            .list()
+            .expect_err("Se esperaba error por json corrupto");
+        let mensaje = error.to_string();
+
+        assert!(mensaje.contains("parseando jobs.json"));
+    }
+
+    #[test]
     fn test_normalizar_jobs_al_arranque_marca_processing_como_failed() {
         let mut jobs = vec![
             {
@@ -915,7 +946,7 @@ mod layout_engine_tests {
 
 #[cfg(test)]
 mod pipeline_cancelacion_tests {
-    use ocrfast::application::pipeline::{OcrPipeline, MSG_JOB_CANCELADO};
+    use ocrfast::application::pipeline::{OcrPipeline, PipelineFailure};
     use ocrfast::domain::ProcessingProfile;
     use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
     use ocrfast::infrastructure::ocr_engines::stub::StubOcrEngine;
@@ -942,10 +973,9 @@ mod pipeline_cancelacion_tests {
         );
 
         assert!(resultado.is_err(), "Pipeline cancelado debe retornar error");
-        assert_eq!(
-            resultado.err().unwrap().to_string(),
-            MSG_JOB_CANCELADO,
-            "El mensaje de error debe ser exactamente MSG_JOB_CANCELADO"
+        assert!(
+            matches!(resultado.err().unwrap(), PipelineFailure::Cancelado),
+            "La cancelacion debe expresarse con una variante tipada"
         );
     }
 
