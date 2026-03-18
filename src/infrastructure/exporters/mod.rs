@@ -1,3 +1,5 @@
+mod latex_ast;
+
 use crate::domain::errors::ExportError;
 use crate::domain::{
     AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job, Page,
@@ -6,6 +8,10 @@ use crate::domain::{
 use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort};
 use encoding_rs::WINDOWS_1252;
+use latex_ast::{
+    render_document, LatexAsset, LatexContent, LatexDocument, LatexExportPlan, LatexImage,
+    LatexNode, LatexPackage, LatexParagraph, LatexTable, LatexTextBlock,
+};
 use lopdf::dictionary;
 use std::fs;
 use std::io::Cursor;
@@ -265,52 +271,19 @@ impl ExporterPort for LatexExporter {
         asegurar_directorio_padre(output_path)?;
 
         let blueprint = construir_blueprint(&job.document)?;
-        let primera_pagina = blueprint
-            .pages
-            .first()
-            .ok_or_else(|| ExportError::SerializationError("Documento sin páginas".to_string()))?;
-
         let directorio_assets = directorio_assets(output_path);
         fs::create_dir_all(&directorio_assets)?;
 
-        let mut contenido = String::new();
-        contenido.push_str("\\documentclass{article}\n");
-        contenido.push_str(&format!(
-            "\\usepackage[paperwidth={:.2}pt,paperheight={:.2}pt,margin=0pt]{{geometry}}\n",
-            px_a_pt(primera_pagina.dimensions.width),
-            px_a_pt(primera_pagina.dimensions.height)
-        ));
-        contenido.push_str("\\usepackage[absolute,overlay]{textpos}\n");
-        contenido.push_str("\\usepackage{graphicx}\n");
-        contenido.push_str("\\usepackage{array}\n");
-        contenido.push_str("\\usepackage{longtable}\n");
-        contenido.push_str("\\usepackage{ragged2e}\n");
-        contenido.push_str("\\pagestyle{empty}\n");
-        contenido.push_str("\\setlength{\\TPHorizModule}{1pt}\n");
-        contenido.push_str("\\setlength{\\TPVertModule}{1pt}\n");
-        contenido.push_str("\\begin{document}\n");
-        contenido.push_str("\\setlength{\\parindent}{0pt}\n");
-
-        for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
-            for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
-                let nombre_asset =
-                    format!("page{}_element{}.png", pagina.number, indice_elemento + 1);
-                contenido.push_str(&latex_elemento(
-                    job,
-                    pagina,
-                    elemento,
-                    &directorio_assets,
-                    &nombre_asset,
-                )?);
-            }
-
-            if indice_pagina + 1 < blueprint.pages.len() {
-                contenido.push_str("\\newpage\n");
-            }
+        let nombre_directorio_assets = directorio_assets
+            .file_name()
+            .and_then(|valor| valor.to_str())
+            .unwrap_or("documento_assets");
+        let plan = construir_plan_latex(job, &blueprint, nombre_directorio_assets)?;
+        for asset in &plan.assets {
+            fs::write(directorio_assets.join(&asset.file_name), &asset.bytes)?;
         }
 
-        contenido.push_str("\\end{document}\n");
-        fs::write(output_path, contenido)?;
+        fs::write(output_path, render_document(&plan.document))?;
         Ok(())
     }
 
@@ -992,24 +965,92 @@ fn crear_xobject_imagen_pdf(
     Ok((xobj_id, format!("Im{}", xobj_id.0)))
 }
 
-fn latex_elemento(
+fn construir_plan_latex(
     job: &Job,
-    _pagina: &crate::domain::PageBlueprint,
+    blueprint: &crate::domain::DocumentBlueprint,
+    nombre_directorio_assets: &str,
+) -> Result<LatexExportPlan, ExportError> {
+    let primera_pagina = blueprint
+        .pages
+        .first()
+        .ok_or_else(|| ExportError::SerializationError("Documento sin páginas".to_string()))?;
+
+    let mut body = Vec::new();
+    let mut assets = Vec::new();
+    for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+        for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
+            let nombre_asset = format!("page{}_element{}.png", pagina.number, indice_elemento + 1);
+            body.push(construir_nodo_latex(
+                job,
+                elemento,
+                &nombre_asset,
+                nombre_directorio_assets,
+                &mut assets,
+            )?);
+        }
+        if indice_pagina + 1 < blueprint.pages.len() {
+            body.push(LatexNode::PageBreak);
+        }
+    }
+
+    Ok(LatexExportPlan {
+        document: LatexDocument {
+            document_class: "article".to_string(),
+            packages: vec![
+                LatexPackage {
+                    name: "geometry".to_string(),
+                    options: vec![format!(
+                        "paperwidth={:.2}pt,paperheight={:.2}pt,margin=0pt",
+                        px_a_pt(primera_pagina.dimensions.width),
+                        px_a_pt(primera_pagina.dimensions.height)
+                    )],
+                },
+                LatexPackage {
+                    name: "textpos".to_string(),
+                    options: vec!["absolute".to_string(), "overlay".to_string()],
+                },
+                LatexPackage {
+                    name: "graphicx".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "array".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "longtable".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "ragged2e".to_string(),
+                    options: Vec::new(),
+                },
+            ],
+            preamble: vec![
+                "\\pagestyle{empty}".to_string(),
+                "\\setlength{\\TPHorizModule}{1pt}".to_string(),
+                "\\setlength{\\TPVertModule}{1pt}".to_string(),
+                "\\setlength{\\parindent}{0pt}".to_string(),
+            ],
+            body,
+        },
+        assets,
+    })
+}
+
+fn construir_nodo_latex(
+    job: &Job,
     elemento: &ElementBlueprint,
-    directorio_assets: &Path,
     nombre_asset: &str,
-) -> Result<String, ExportError> {
-    let x = px_a_pt(elemento.bounding_box.x);
-    let y = px_a_pt(elemento.bounding_box.y);
-    let width = px_a_pt(elemento.bounding_box.width);
-    let height = px_a_pt(elemento.bounding_box.height);
-    let mut contenido = String::new();
+    nombre_directorio_assets: &str,
+    assets: &mut Vec<LatexAsset>,
+) -> Result<LatexNode, ExportError> {
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let width_pt = px_a_pt(elemento.bounding_box.width);
+    let height_pt = px_a_pt(elemento.bounding_box.height);
 
-    contenido.push_str(&format!(
-        "\\begin{{textblock*}}{{{width:.2}pt}}({x:.2}pt,{y:.2}pt)\n"
-    ));
-
-    match elemento.role {
+    let content = match elemento.role {
         ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
             if let Some(ref imagen) = elemento.image_crop {
                 match recortar_imagen_desde_referencia(
@@ -1018,142 +1059,53 @@ fn latex_elemento(
                     &imagen.bounding_box,
                 ) {
                     Ok(bytes) => {
-                        let ruta = directorio_assets.join(nombre_asset);
-                        fs::write(&ruta, bytes)?;
-                        let nombre_relativo = ruta
-                            .file_name()
-                            .and_then(|valor| valor.to_str())
-                            .unwrap_or(nombre_asset);
-                        let directorio_relativo = directorio_assets
-                            .file_name()
-                            .and_then(|valor| valor.to_str())
-                            .unwrap_or("documento_assets");
-                        contenido.push_str(&format!(
-                            "\\includegraphics[width={width:.2}pt,height={height:.2}pt]{{{}/{}}}\n",
-                            escape_latex(directorio_relativo),
-                            escape_latex(nombre_relativo)
-                        ));
+                        assets.push(LatexAsset {
+                            file_name: nombre_asset.to_string(),
+                            bytes,
+                        });
+                        LatexContent::Image(LatexImage {
+                            relative_path: format!("{}/{}", nombre_directorio_assets, nombre_asset),
+                            width_pt,
+                            height_pt,
+                        })
                     }
                     Err(_) => {
-                        contenido.push_str("\\fbox{Imagen no disponible en memoria}\n");
+                        LatexContent::FallbackBox("Imagen no disponible en memoria".to_string())
                     }
                 }
+            } else {
+                LatexContent::FallbackBox("Imagen no disponible en memoria".to_string())
             }
         }
         ElementRole::Table => {
             if let Some(ref tabla) = elemento.table {
-                contenido.push_str(&latex_tabla(tabla, width));
-            } else if !elemento.text.trim().is_empty() {
-                contenido.push_str(&latex_parrafo(
-                    &elemento.text,
-                    elemento.style.alignment,
-                    elemento.style.emphasis,
-                    elemento.style.font_scale,
-                ));
+                LatexContent::Table(LatexTable {
+                    table: tabla.clone(),
+                    width_pt,
+                })
+            } else {
+                LatexContent::Paragraph(LatexParagraph {
+                    text: elemento.text.clone(),
+                    alignment: elemento.style.alignment,
+                    emphasis: elemento.style.emphasis,
+                    font_scale: elemento.style.font_scale,
+                })
             }
         }
-        _ => {
-            if !elemento.text.trim().is_empty() {
-                contenido.push_str(&latex_parrafo(
-                    &elemento.text,
-                    elemento.style.alignment,
-                    elemento.style.emphasis,
-                    elemento.style.font_scale,
-                ));
-            }
-        }
-    }
+        _ => LatexContent::Paragraph(LatexParagraph {
+            text: elemento.text.clone(),
+            alignment: elemento.style.alignment,
+            emphasis: elemento.style.emphasis,
+            font_scale: elemento.style.font_scale,
+        }),
+    };
 
-    contenido.push_str("\\end{textblock*}\n");
-    Ok(contenido)
-}
-
-fn latex_parrafo(
-    texto: &str,
-    alineacion: AlignmentHint,
-    emphasis: EmphasisHint,
-    escala_fuente: f32,
-) -> String {
-    let mut contenido = String::new();
-    let tamano = (11.0 * escala_fuente as f64).clamp(9.0, 24.0);
-    let interlineado = (tamano * 1.18).clamp(10.0, 28.0);
-    contenido.push_str(&format!(
-        "\\fontsize{{{tamano:.2}pt}}{{{interlineado:.2}pt}}\\selectfont\n"
-    ));
-    contenido.push_str(match alineacion {
-        AlignmentHint::Center => "\\centering\n",
-        AlignmentHint::Right => "\\raggedleft\n",
-        AlignmentHint::Left | AlignmentHint::FullWidth => "\\RaggedRight\n",
-    });
-
-    let texto_escapado = escape_latex(texto);
-    if emphasis == EmphasisHint::Strong {
-        contenido.push_str(&format!("\\textbf{{{texto_escapado}}}\n"));
-    } else {
-        contenido.push_str(&texto_escapado);
-        contenido.push('\n');
-    }
-    contenido
-}
-
-fn latex_tabla(tabla: &TableStructure, ancho_total_pt: f64) -> String {
-    if tabla.rows.is_empty() || tabla.num_cols == 0 {
-        return "[Tabla vacia]\n".to_string();
-    }
-
-    let columnas = tabla.num_cols.max(1) as usize;
-    let anchos_columna = latex_column_widths(tabla, ancho_total_pt, columnas);
-    let especificacion = anchos_columna
-        .iter()
-        .map(|ancho| format!("|p{{{ancho:.2}pt}}"))
-        .collect::<String>()
-        + "|";
-
-    let mut contenido = String::new();
-    contenido.push_str("\\renewcommand{\\arraystretch}{1.05}\n");
-    contenido.push_str(&format!(
-        "\\begin{{tabular}}{{{especificacion}}}\n\\hline\n"
-    ));
-
-    for (fila_index, fila) in tabla.rows.iter().enumerate() {
-        let celdas = fila
-            .iter()
-            .map(|celda| {
-                let texto = escape_latex(&celda.content);
-                let texto = if tabla.is_header_row(fila_index)
-                    || celda
-                        .style
-                        .as_ref()
-                        .is_some_and(|style| style.is_emphasized)
-                {
-                    format!("\\textbf{{{texto}}}")
-                } else {
-                    texto
-                };
-
-                match celda
-                    .style
-                    .as_ref()
-                    .map(|style| style.alignment)
-                    .unwrap_or_else(|| {
-                        if tabla.is_header_row(fila_index) {
-                            TableCellAlignment::Center
-                        } else {
-                            TableCellAlignment::Left
-                        }
-                    }) {
-                    TableCellAlignment::Left => format!("\\raggedright\\arraybackslash {texto}"),
-                    TableCellAlignment::Center => format!("\\centering\\arraybackslash {texto}"),
-                    TableCellAlignment::Right => format!("\\raggedleft\\arraybackslash {texto}"),
-                }
-            })
-            .collect::<Vec<_>>();
-        contenido.push_str(&celdas.join(" & "));
-        contenido.push_str(" \\\\\n\\hline\n");
-    }
-
-    contenido.push_str("\\end{tabular}\n");
-    contenido
+    Ok(LatexNode::PositionedBlock(LatexTextBlock {
+        width_pt,
+        x_pt,
+        y_pt,
+        content,
+    }))
 }
 
 fn docx_xml_elemento(
@@ -1446,21 +1398,6 @@ fn alignment_hint_from_table(alignment: TableCellAlignment) -> AlignmentHint {
     }
 }
 
-fn latex_column_widths(tabla: &TableStructure, ancho_total_pt: f64, columnas: usize) -> Vec<f64> {
-    if tabla.column_widths.len() != columnas || tabla.column_widths.iter().all(|ancho| *ancho == 0)
-    {
-        let ancho_columna = (ancho_total_pt / columnas as f64).max(48.0);
-        return vec![ancho_columna; columnas];
-    }
-
-    let suma = tabla.column_widths.iter().sum::<u32>().max(1) as f64;
-    tabla
-        .column_widths
-        .iter()
-        .map(|ancho| ((ancho_total_pt * (*ancho as f64 / suma)).max(48.0)).min(ancho_total_pt))
-        .collect()
-}
-
 fn docx_table_column_widths(tabla: &TableStructure) -> Vec<u32> {
     let columnas = tabla.num_cols.max(1) as usize;
     if tabla.column_widths.len() != columnas || tabla.column_widths.iter().all(|ancho| *ancho == 0)
@@ -1560,20 +1497,6 @@ fn escape_xml(texto: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
-}
-
-fn escape_latex(texto: &str) -> String {
-    texto
-        .replace('\\', "\\textbackslash{}")
-        .replace('&', "\\&")
-        .replace('%', "\\%")
-        .replace('$', "\\$")
-        .replace('#', "\\#")
-        .replace('_', "\\_")
-        .replace('{', "\\{")
-        .replace('}', "\\}")
-        .replace('~', "\\textasciitilde{}")
-        .replace('^', "\\textasciicircum{}")
 }
 
 struct ZipEntry {
