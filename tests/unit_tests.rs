@@ -697,6 +697,79 @@ mod exporter_tests {
         }
     }
 
+    fn job_pdf_fallback_confianza() -> Job {
+        let mut img = image::RgbImage::from_pixel(800, 500, image::Rgb([255, 255, 255]));
+        for y in 60..170 {
+            for x in 60..360 {
+                img.put_pixel(x, y, image::Rgb([240, 120, 120]));
+            }
+        }
+        for y in 260..360 {
+            for x in 60..420 {
+                img.put_pixel(x, y, image::Rgb([180, 220, 255]));
+            }
+        }
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+
+        Job {
+            id: "job-pdf-fallback".to_string(),
+            document: Document {
+                id: "exp-pdf-fallback".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/fallback.png"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 800,
+                        height: 500,
+                    },
+                    image_data: Some(buffer.into_inner()),
+                    blocks: vec![
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 60,
+                                y: 60,
+                                width: 300,
+                                height: 110,
+                            },
+                            content: "texto dudoso".to_string(),
+                            confidence: 0.41,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 0,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 60,
+                                y: 260,
+                                width: 360,
+                                height: 100,
+                            },
+                            content: "texto claro".to_string(),
+                            confidence: 0.96,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 1,
+                        },
+                    ],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
     #[test]
     fn test_txt_exporter_tabla_con_estructura_usa_texto_plano() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_txt");
@@ -953,6 +1026,60 @@ mod exporter_tests {
                 .as_name()
                 .expect("El encoding debe ser un name"),
             b"WinAnsiEncoding"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_preserva_imagen_en_bloque_de_baja_confianza() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf_confidence_fallback");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter
+            .export(&job_pdf_fallback_confianza(), &ruta)
+            .unwrap();
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let (&_numero_pagina, &page_id) = pdf
+            .get_pages()
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe leerse");
+        let content = lopdf::content::Content::decode(&contenido)
+            .expect("El content stream debe decodificarse");
+
+        let operaciones_do = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Do")
+            .count();
+        assert_eq!(
+            operaciones_do, 1,
+            "Solo el bloque de baja confianza debe degradarse a imagen"
+        );
+
+        let textos: Vec<String> = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Tj")
+            .filter_map(|op| op.operands.first())
+            .filter_map(|obj| obj.as_str().ok())
+            .map(|bytes| WINDOWS_1252.decode(bytes).0.into_owned())
+            .collect();
+        let texto_visible = textos.join(" ");
+        assert!(
+            texto_visible.contains("texto") && texto_visible.contains("claro"),
+            "El bloque de alta confianza debe seguir saliendo como texto visible"
+        );
+        assert!(
+            !texto_visible.contains("dudoso"),
+            "El bloque de baja confianza no debe serializarse como texto PDF"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

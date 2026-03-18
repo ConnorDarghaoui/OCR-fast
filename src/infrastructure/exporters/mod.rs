@@ -29,6 +29,8 @@ const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
 const EMUS_POR_PUNTO: u64 = 12_700;
 /// Calidad JPEG para recortes embebidos en PDF reconstruido.
 const PDF_IMAGE_JPEG_QUALITY: u8 = 82;
+/// Umbral conservador para degradar bloques OCR débiles a imagen en PDF.
+const PDF_FALLBACK_OCR_CONFIDENCE_THRESHOLD: f32 = 0.74;
 /// La fuente core Helvetica usa una caja de 1000 unidades por EM.
 const HELVETICA_UNIDADES_POR_EM: f64 = 1000.0;
 /// Fallback conservador mientras el camino Unicode siga sin fuente embebida.
@@ -555,6 +557,20 @@ fn agregar_elemento_pdf(
     recursos_xobject: &mut lopdf::Dictionary,
     operaciones: &mut Vec<lopdf::content::Operation>,
 ) -> Result<(), ExportError> {
+    if debe_preservarse_como_imagen_en_pdf(elemento)
+        && agregar_recorte_pdf(
+            job,
+            pagina.dimensions.height,
+            pagina.number,
+            &elemento.bounding_box,
+            doc,
+            recursos_xobject,
+            operaciones,
+        )?
+    {
+        return Ok(());
+    }
+
     match elemento.role {
         ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
             agregar_imagen_pdf(
@@ -594,22 +610,56 @@ fn agregar_imagen_pdf(
         return Ok(());
     };
 
-    let bytes =
-        match recortar_imagen_desde_referencia(job, imagen.page_number, &imagen.bounding_box) {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(()),
-        };
+    let _ = agregar_recorte_pdf(
+        job,
+        pagina.dimensions.height,
+        imagen.page_number,
+        &imagen.bounding_box,
+        doc,
+        recursos_xobject,
+        operaciones,
+    )?;
+    Ok(())
+}
+
+fn debe_preservarse_como_imagen_en_pdf(elemento: &ElementBlueprint) -> bool {
+    matches!(
+        elemento.role,
+        ElementRole::Title
+            | ElementRole::Paragraph
+            | ElementRole::Table
+            | ElementRole::Formula
+            | ElementRole::ListItem
+            | ElementRole::Unknown
+    ) && elemento
+        .ocr_confidence
+        .is_some_and(|valor| valor < PDF_FALLBACK_OCR_CONFIDENCE_THRESHOLD)
+}
+
+fn agregar_recorte_pdf(
+    job: &Job,
+    altura_pagina_px: u32,
+    numero_pagina: u32,
+    bounding_box: &Rectangle,
+    doc: &mut lopdf::Document,
+    recursos_xobject: &mut lopdf::Dictionary,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) -> Result<bool, ExportError> {
+    let bytes = match recortar_imagen_desde_referencia(job, numero_pagina, bounding_box) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(false),
+    };
 
     let (xobject_id, nombre) = crear_xobject_imagen_pdf(doc, &bytes).map_err(|e| {
         ExportError::SerializationError(format!("No se pudo crear XObject PDF: {e}"))
     })?;
     recursos_xobject.set(nombre.clone(), xobject_id);
 
-    let x_pt = px_a_pt(elemento.bounding_box.x);
-    let y_pt = px_a_pt(elemento.bounding_box.y);
-    let width_pt = px_a_pt(elemento.bounding_box.width);
-    let height_pt = px_a_pt(elemento.bounding_box.height);
-    let origin_y = px_a_pt(pagina.dimensions.height) - y_pt - height_pt;
+    let x_pt = px_a_pt(bounding_box.x);
+    let y_pt = px_a_pt(bounding_box.y);
+    let width_pt = px_a_pt(bounding_box.width);
+    let height_pt = px_a_pt(bounding_box.height);
+    let origin_y = px_a_pt(altura_pagina_px) - y_pt - height_pt;
 
     operaciones.push(lopdf::content::Operation::new("q", vec![]));
     operaciones.push(lopdf::content::Operation::new(
@@ -628,8 +678,7 @@ fn agregar_imagen_pdf(
         vec![lopdf::Object::Name(nombre.into_bytes())],
     ));
     operaciones.push(lopdf::content::Operation::new("Q", vec![]));
-
-    Ok(())
+    Ok(true)
 }
 
 fn agregar_texto_pdf(
