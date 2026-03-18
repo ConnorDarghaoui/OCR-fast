@@ -207,7 +207,7 @@ pub enum BlockType {
 ///
 /// La representación usa filas de `TableCell` en lugar de una malla densa porque
 /// los `row_span` y `col_span` son parte del dominio, no un detalle de render.
-/// Esto permite reconstruir Markdown, JSON o formatos futuros sin perder la
+/// Esto permite reconstruir texto plano, JSON o formatos futuros sin perder la
 /// estructura fusionada que observó el detector.
 ///
 /// # Trade-offs
@@ -226,12 +226,12 @@ pub struct TableStructure {
 }
 
 impl TableStructure {
-    /// Convierte la tabla a Markdown consumible por exportadores y previews.
+    /// Convierte la tabla a texto tabulado consumible por exportadores ligeros.
     ///
-    /// La primera fila se trata como encabezado porque es la convención más útil
-    /// para lectura humana y porque Markdown no expresa metadata tabular más rica.
-    /// El método degrada con gracia ante tablas incompletas en lugar de fallar,
-    /// priorizando exportación utilizable sobre exactitud estructural perfecta.
+    /// El formato usa tabs entre columnas y saltos de línea entre filas para
+    /// mantener máxima compatibilidad con flujos de extracción simples. El método
+    /// degrada con gracia ante tablas incompletas en lugar de fallar, priorizando
+    /// exportación utilizable sobre exactitud estructural perfecta.
     ///
     /// # Performance
     ///
@@ -240,23 +240,19 @@ impl TableStructure {
     ///
     /// # Trade-offs
     ///
-    /// Markdown pierde spans y geometría fina. Para consumidores que necesiten
-    /// fidelidad estructural total, debe preferirse la representación JSON.
-    pub fn to_markdown(&self) -> String {
+    /// El texto plano pierde spans y geometría fina. Para consumidores que
+    /// necesiten fidelidad estructural total, debe preferirse JSON.
+    pub fn to_plain_text(&self) -> String {
         if self.rows.is_empty() {
             return String::new();
         }
 
         let mut resultado = String::new();
 
-        for (i, fila) in self.rows.iter().enumerate() {
+        for fila in &self.rows {
             let celdas: Vec<String> = fila.iter().map(|c| c.content.clone()).collect();
-            resultado.push_str(&format!("| {} |\n", celdas.join(" | ")));
-
-            if i == 0 {
-                let separadores: Vec<String> = fila.iter().map(|_| "---".to_string()).collect();
-                resultado.push_str(&format!("| {} |\n", separadores.join(" | ")));
-            }
+            resultado.push_str(&celdas.join("\t"));
+            resultado.push('\n');
         }
 
         resultado
@@ -304,9 +300,9 @@ pub struct Rectangle {
 /// de aplicación a nombres concretos de exportadores.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
 pub enum OutputFormat {
-    /// Markdown con estructura de bloques.
+    /// Texto plano en orden de lectura.
     #[default]
-    Markdown,
+    Txt,
     /// PDF tipo sandwich (imagen + texto invisible seleccionable).
     Pdf,
     /// JSON con el Job completo serializado.
@@ -322,7 +318,7 @@ impl OutputFormat {
     /// tabla aquí centraliza compatibilidad y evita divergencia entre UI y storage.
     pub fn extension(&self) -> &'static str {
         match self {
-            Self::Markdown => "md",
+            Self::Txt => "txt",
             Self::Pdf => "pdf",
             Self::Json => "json",
         }
@@ -336,7 +332,7 @@ impl OutputFormat {
     /// tocar flujos de persistencia ni convenciones de archivos.
     pub fn nombre(&self) -> &'static str {
         match self {
-            Self::Markdown => "Markdown",
+            Self::Txt => "TXT",
             Self::Pdf => "PDF",
             Self::Json => "JSON",
         }
@@ -348,11 +344,8 @@ impl OutputFormat {
     ///
     /// Se expone como slice estático para evitar asignaciones y para preservar un
     /// orden determinista en menús y pruebas de snapshot.
-    pub const OPCIONES: &'static [OutputFormat] = &[
-        OutputFormat::Markdown,
-        OutputFormat::Pdf,
-        OutputFormat::Json,
-    ];
+    pub const OPCIONES: &'static [OutputFormat] =
+        &[OutputFormat::Txt, OutputFormat::Pdf, OutputFormat::Json];
 }
 
 /// Máquina de estados observable de un trabajo OCR.

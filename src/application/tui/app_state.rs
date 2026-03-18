@@ -1,6 +1,6 @@
 use crate::application::pipeline::{OcrPipeline, PipelineEvent, MSG_JOB_CANCELADO};
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
-use crate::infrastructure::exporters::{JsonExporter, MarkdownExporter, PdfSandwichExporter};
+use crate::infrastructure::exporters::{JsonExporter, PdfSandwichExporter, TxtExporter};
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
 use crate::infrastructure::postprocessors::TextPostprocessor;
 use crate::interfaces::ports::{DocumentParserPort, ExporterPort, JobStorePort, OcrEnginePort};
@@ -780,23 +780,23 @@ impl AppState {
         self.loguear(format!("Trabajo {} eliminado", &id_trabajo[..8]));
     }
 
-    /// Exporta el trabajo seleccionado a Markdown.
-    pub fn exportar_trabajo_markdown(&mut self) {
+    /// Exporta el trabajo seleccionado a texto plano.
+    pub fn exportar_trabajo_txt(&mut self) {
         let trabajo = match self.obtener_trabajo_seleccionado() {
             Some(j) => j.clone(),
             None => return,
         };
 
-        let ruta_base = trabajo.document.source_path.with_extension("md");
-        let exportador = MarkdownExporter::new();
+        let ruta_base = trabajo.document.source_path.with_extension("txt");
+        let exportador = TxtExporter::new();
 
         match exportador.export(&trabajo, &ruta_base) {
             Ok(_) => {
-                self.loguear(format!("Exportado MD: {}", ruta_base.display()));
+                self.loguear(format!("Exportado TXT: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
             }
             Err(e) => {
-                self.loguear(format!("Error exportacion MD: {}", e));
+                self.loguear(format!("Error exportacion TXT: {}", e));
                 self.mostrar_estado(format!("Error exportacion: {}", e));
             }
         }
@@ -934,9 +934,7 @@ fn exportar_segun_formato(
     ruta: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match job.formato_salida {
-        OutputFormat::Markdown => MarkdownExporter::new()
-            .export(job, ruta)
-            .map_err(|e| e.into()),
+        OutputFormat::Txt => TxtExporter::new().export(job, ruta).map_err(|e| e.into()),
         OutputFormat::Pdf => PdfSandwichExporter::new()
             .export(job, ruta)
             .map_err(|e| e.into()),

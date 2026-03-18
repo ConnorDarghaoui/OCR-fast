@@ -8,91 +8,88 @@ use std::path::Path;
 /// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
 
-/// Exportador de documentos OCR a Markdown legible por humanos.
+/// Exportador de documentos OCR a texto plano legible por humanos.
 ///
 /// La implementación prioriza inspección y portabilidad: el resultado puede
 /// abrirse en cualquier editor de texto y es útil para debugging, diffing y
 /// revisión manual del OCR sin depender de herramientas especializadas.
-pub struct MarkdownExporter;
+pub struct TxtExporter;
 
-impl MarkdownExporter {
-    /// Construye un exportador Markdown sin estado interno.
+impl TxtExporter {
+    /// Construye un exportador TXT sin estado interno.
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for MarkdownExporter {
+impl Default for TxtExporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ExporterPort for MarkdownExporter {
+impl ExporterPort for TxtExporter {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
-        log::info!(
-            "Exportando trabajo {} a Markdown: {:?}",
-            job.id,
-            output_path
-        );
+        log::info!("Exportando trabajo {} a TXT: {:?}", job.id, output_path);
 
         let mut content = String::new();
 
-        content.push_str(&format!("# Documento: {}\n\n", job.document.id));
+        content.push_str(&format!("Documento: {}\n", job.document.id));
         content.push_str(&format!(
-            "- **Archivo fuente**: {}\n",
+            "Archivo fuente: {}\n",
             job.document.source_path.display()
         ));
-        content.push_str(&format!("- **Perfil**: {:?}\n", job.profile));
-        content.push_str(&format!("- **Estado**: {:?}\n\n", job.status));
-        content.push_str("---\n\n");
+        content.push_str(&format!("Perfil: {:?}\n", job.profile));
+        content.push_str(&format!("Estado: {:?}\n\n", job.status));
 
         for page in &job.document.pages {
-            content.push_str(&format!("## Pagina {}\n\n", page.number));
+            content.push_str(&format!("===== PAGINA {} =====\n\n", page.number));
 
             for block in &page.blocks {
                 match block.block_type {
                     BlockType::Title => {
-                        content.push_str(&format!("### {}\n\n", block.content));
+                        content.push_str(&format!("{}\n\n", block.content.to_uppercase()));
                     }
-                    BlockType::Text => {
+                    BlockType::Text | BlockType::List => {
                         content.push_str(&format!("{}\n\n", block.content));
                     }
                     BlockType::Table => {
                         if let Some(ref estructura) = block.table_structure {
-                            let tabla_md = estructura.to_markdown();
-                            if !tabla_md.is_empty() {
-                                content.push_str(&tabla_md);
+                            let tabla_txt = estructura.to_plain_text();
+                            if !tabla_txt.is_empty() {
+                                content.push_str(&tabla_txt);
                                 content.push('\n');
                             } else {
-                                content.push_str(&format!("```\n[Tabla vacía]\n```\n\n"));
+                                content.push_str("[Tabla vacia]\n\n");
                             }
                         } else if !block.content.is_empty() {
-                            content.push_str(&format!("```\n{}\n```\n\n", block.content));
+                            content.push_str(&format!("{}\n\n", block.content));
                         } else {
-                            content.push_str("```\n[Tabla sin contenido]\n```\n\n");
+                            content.push_str("[Tabla sin contenido]\n\n");
                         }
                     }
                     BlockType::Formula => {
-                        content.push_str(&format!("${}$\n\n", block.content));
+                        content.push_str(&format!("Formula: {}\n\n", block.content));
+                    }
+                    BlockType::Image => {
+                        content.push_str("[Imagen preservada en formato visual]\n\n");
                     }
                     _ => {
-                        content.push_str(&format!(
-                            "<!-- {:?}: {} -->\n\n",
-                            block.block_type, block.content
-                        ));
+                        if !block.content.trim().is_empty() {
+                            content.push_str(&format!("{}\n\n", block.content));
+                        }
                     }
                 }
             }
         }
 
         fs::write(output_path, content)?;
-        log::info!("Exportacion Markdown completada");
+        log::info!("Exportacion TXT completada");
         Ok(())
     }
 
     fn format_name(&self) -> &str {
-        "Markdown"
+        "TXT"
     }
 }
 
@@ -354,7 +351,7 @@ impl PdfSandwichExporter {
 
 /// Exportador a JSON estructurado para integración y depuración.
 ///
-/// A diferencia de Markdown o PDF, este formato prioriza preservación completa
+/// A diferencia de TXT o PDF, este formato prioriza preservación completa
 /// de metadatos y estructura para integraciones posteriores o pruebas.
 pub struct JsonExporter;
 

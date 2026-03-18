@@ -403,7 +403,7 @@ mod exporter_tests {
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableStructure,
     };
-    use ocrfast::infrastructure::exporters::{JsonExporter, MarkdownExporter};
+    use ocrfast::infrastructure::exporters::{JsonExporter, TxtExporter};
     use ocrfast::interfaces::ports::ExporterPort;
     use std::collections::HashMap;
 
@@ -508,18 +508,18 @@ mod exporter_tests {
     }
 
     #[test]
-    fn test_markdown_tabla_con_estructura_usa_to_markdown() {
-        let dir = std::env::temp_dir().join("ocrfast_exp_test_md");
+    fn test_txt_tabla_con_estructura_usa_texto_tabulado() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_txt");
         std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join("output.md");
+        let ruta = dir.join("output.txt");
 
-        let exporter = MarkdownExporter::new();
+        let exporter = TxtExporter::new();
         exporter.export(&job_con_tabla(true), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
         assert!(
-            contenido.contains("---"),
-            "Tabla con estructura debe usar formato Markdown con separadores"
+            contenido.contains("Nombre\tEdad"),
+            "Tabla con estructura debe exportarse como texto tabulado"
         );
         assert!(
             contenido.contains("Nombre"),
@@ -530,20 +530,20 @@ mod exporter_tests {
             "Debe contener nombre de columna"
         );
         assert!(
-            !contenido.contains("```\n[Tabla]"),
-            "No debe usar el fallback de bloque de codigo antiguo"
+            !contenido.contains("| Nombre | Edad |"),
+            "TXT no debe contener serialización Markdown"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_markdown_tabla_sin_estructura_usa_fallback() {
-        let dir = std::env::temp_dir().join("ocrfast_exp_test_md_fb");
+    fn test_txt_tabla_sin_estructura_usa_fallback() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_txt_fb");
         std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join("output.md");
+        let ruta = dir.join("output.txt");
 
-        let exporter = MarkdownExporter::new();
+        let exporter = TxtExporter::new();
         exporter.export(&job_con_tabla(false), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();

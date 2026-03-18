@@ -1,6 +1,6 @@
 /// Adaptadores concretos de parsing y render de documentos.
 pub mod document_parsers;
-/// Materializadores de salida para Markdown, PDF y JSON.
+/// Materializadores de salida para TXT, PDF y JSON.
 pub mod exporters;
 /// Persistencia local de snapshots de trabajos.
 pub mod job_store;

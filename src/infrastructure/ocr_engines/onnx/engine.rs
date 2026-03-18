@@ -222,7 +222,7 @@ impl OnnxOcrEngine {
                     }
                 }
 
-                bloque.content = estructura.to_markdown();
+                bloque.content = estructura.to_plain_text();
                 bloque.table_structure = Some(estructura);
             }
             Err(e) => log::warn!("Error analizando tabla: {}", e),

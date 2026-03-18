@@ -116,7 +116,7 @@ fn manejar_modo_normal(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<(),
         },
         ViewMode::JobDetail => match tecla.code {
             KeyCode::Char('q') | KeyCode::Esc => aplicacion.cambiar_vista(ViewMode::JobList),
-            KeyCode::Char('e') => aplicacion.exportar_trabajo_markdown(),
+            KeyCode::Char('e') => aplicacion.exportar_trabajo_txt(),
             KeyCode::Char('E') => aplicacion.exportar_trabajo_json(),
             KeyCode::Char('p') => aplicacion.exportar_trabajo_pdf(),
             KeyCode::Down | KeyCode::Char('j') => aplicacion.scroll_detalle_abajo(),
