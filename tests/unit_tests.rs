@@ -573,6 +573,249 @@ mod exporter_tests {
         }
     }
 
+    fn job_latex_semantico() -> Job {
+        let tabla = Some(TableStructure {
+            num_rows: 2,
+            num_cols: 2,
+            header_row_indices: vec![0],
+            column_widths: vec![180, 220],
+            rows: vec![
+                vec![
+                    TableCell {
+                        content: "Seccion".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 0,
+                            y: 0,
+                            width: 180,
+                            height: 30,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Center,
+                            is_emphasized: true,
+                        }),
+                    },
+                    TableCell {
+                        content: "Contenido".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 180,
+                            y: 0,
+                            width: 220,
+                            height: 30,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Center,
+                            is_emphasized: true,
+                        }),
+                    },
+                ],
+                vec![
+                    TableCell {
+                        content: "Resumen".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 0,
+                            y: 30,
+                            width: 180,
+                            height: 32,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Left,
+                            is_emphasized: false,
+                        }),
+                    },
+                    TableCell {
+                        content: "Tabla semantica lista para exportar".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 180,
+                            y: 30,
+                            width: 220,
+                            height: 32,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Left,
+                            is_emphasized: false,
+                        }),
+                    },
+                ],
+            ],
+        });
+
+        Job {
+            id: "job-latex-sem".to_string(),
+            document: Document {
+                id: "exp-latex-sem".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/latex-sem.pdf"),
+                pages: vec![
+                    Page {
+                        number: 1,
+                        dimensions: Dimensions {
+                            width: 1200,
+                            height: 1600,
+                        },
+                        image_data: Some(png_color_sintetico(1200, 1600, [251, 251, 245])),
+                        blocks: vec![
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 120,
+                                    y: 24,
+                                    width: 960,
+                                    height: 32,
+                                },
+                                content: "Encabezado repetido del libro".to_string(),
+                                confidence: 0.99,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 0,
+                            },
+                            Block {
+                                block_type: BlockType::Title,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 120,
+                                    width: 920,
+                                    height: 64,
+                                },
+                                content: "Capitulo del libro".to_string(),
+                                confidence: 0.98,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 1,
+                            },
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 240,
+                                    width: 900,
+                                    height: 180,
+                                },
+                                content: "Primer parrafo del documento reconstruido.".to_string(),
+                                confidence: 0.96,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 2,
+                            },
+                        ],
+                    },
+                    Page {
+                        number: 2,
+                        dimensions: Dimensions {
+                            width: 1200,
+                            height: 1600,
+                        },
+                        image_data: Some(png_color_sintetico(1200, 1600, [252, 252, 246])),
+                        blocks: vec![
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 120,
+                                    y: 24,
+                                    width: 960,
+                                    height: 32,
+                                },
+                                content: "Encabezado repetido del libro".to_string(),
+                                confidence: 0.99,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 0,
+                            },
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 140,
+                                    width: 920,
+                                    height: 160,
+                                },
+                                content: "Segundo parrafo del documento reconstruido.".to_string(),
+                                confidence: 0.95,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 1,
+                            },
+                            Block {
+                                block_type: BlockType::Table,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 360,
+                                    width: 760,
+                                    height: 180,
+                                },
+                                content: "Seccion | Contenido\nResumen | Tabla semantica lista para exportar"
+                                    .to_string(),
+                                confidence: 0.93,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: tabla.clone(),
+                                reading_order: 2,
+                            },
+                        ],
+                    },
+                    Page {
+                        number: 3,
+                        dimensions: Dimensions {
+                            width: 1200,
+                            height: 1600,
+                        },
+                        image_data: Some(png_color_sintetico(1200, 1600, [245, 248, 252])),
+                        blocks: vec![
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 120,
+                                    y: 24,
+                                    width: 960,
+                                    height: 32,
+                                },
+                                content: "Encabezado repetido del libro".to_string(),
+                                confidence: 0.99,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 0,
+                            },
+                            Block {
+                                block_type: BlockType::Image,
+                                bounding_box: Rectangle {
+                                    x: 220,
+                                    y: 180,
+                                    width: 420,
+                                    height: 260,
+                                },
+                                content: String::new(),
+                                confidence: 0.97,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 1,
+                            },
+                        ],
+                    },
+                ],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
     fn job_dos_columnas() -> Job {
         Job {
             id: "job-cols".to_string(),
@@ -873,30 +1116,34 @@ mod exporter_tests {
     }
 
     #[test]
-    fn test_latex_exporter_genera_fuente_y_assets() {
+    fn test_latex_exporter_semantico_genera_fuente_y_assets() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_tex");
         std::fs::create_dir_all(&dir).unwrap();
         let ruta = dir.join("output.tex");
 
         let exporter = LatexExporter::new();
-        exporter.export(&job_con_tabla(true), &ruta).unwrap();
+        exporter.export(&job_latex_semantico(), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
         assert!(
-            contenido.contains("\\begin{textblock*}"),
-            "La salida LaTeX debe usar bloques absolutos guiados por blueprint"
+            contenido.contains("\\section*{Capitulo del libro}"),
+            "La salida LaTeX semantica debe materializar titulos como secciones"
         );
         assert!(
             contenido.contains("\\includegraphics"),
-            "La salida LaTeX debe intentar preservar figuras del original"
+            "La salida LaTeX debe preservar figuras del original"
         );
         assert!(
             contenido.contains("\\begin{tabular}"),
-            "La salida LaTeX debe materializar tablas"
+            "La salida LaTeX semantica debe materializar tablas"
         );
         assert!(
-            contenido.contains("\\textbf{Nombre}") && contenido.contains("p{"),
-            "La tabla LaTeX debe conservar encabezado fuerte y anchuras enriquecidas"
+            !contenido.contains("Encabezado repetido del libro"),
+            "Los headers sospechosos no deben contaminar el cuerpo semantico"
+        );
+        assert!(
+            !contenido.contains("\\begin{textblock*}"),
+            "La ruta semantica no debe depender de textblock absoluto"
         );
 
         let assets = dir.join("output_assets");
@@ -905,7 +1152,10 @@ mod exporter_tests {
             "El exportador debe generar directorio de assets"
         );
         assert!(
-            assets.join("page1_element3.png").exists(),
+            std::fs::read_dir(&assets)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "png")),
             "La figura recortada debe persistirse como asset externo"
         );
 

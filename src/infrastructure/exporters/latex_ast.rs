@@ -30,6 +30,21 @@ pub struct LatexPackage {
 
 /// Nodo de cuerpo del documento LaTeX.
 pub enum LatexNode {
+    /// Sección semántica del documento.
+    Section {
+        /// Título visible de la sección.
+        title: String,
+        /// Indica si la sección debe numerarse.
+        numbered: bool,
+    },
+    /// Párrafo refluible fuera de posicionamiento absoluto.
+    Paragraph(LatexParagraph),
+    /// Tabla semántica fuera de posicionamiento absoluto.
+    Table(LatexTable),
+    /// Figura semántica referenciada por asset externo.
+    Figure(LatexImage),
+    /// Lista simple derivada de bloques consecutivos.
+    Itemize(Vec<String>),
     /// Bloque posicionado absoluto sobre la página.
     PositionedBlock(LatexTextBlock),
     /// Salto explícito de página.
@@ -132,9 +147,27 @@ pub fn render_document(document: &LatexDocument) -> String {
 
 fn render_node(node: &LatexNode) -> String {
     match node {
+        LatexNode::Section { title, numbered } => render_section(title, *numbered),
+        LatexNode::Paragraph(paragraph) => {
+            let mut contenido = render_paragraph(paragraph);
+            contenido.push_str("\\par\n");
+            contenido
+        }
+        LatexNode::Table(table) => {
+            let mut contenido = render_table(table);
+            contenido.push('\n');
+            contenido
+        }
+        LatexNode::Figure(image) => render_figure(image),
+        LatexNode::Itemize(items) => render_itemize(items),
         LatexNode::PositionedBlock(block) => render_text_block(block),
         LatexNode::PageBreak => "\\newpage\n".to_string(),
     }
+}
+
+fn render_section(title: &str, numbered: bool) -> String {
+    let comando = if numbered { "\\section" } else { "\\section*" };
+    format!("{comando}{{{}}}\n", escape_latex(title))
 }
 
 fn render_text_block(block: &LatexTextBlock) -> String {
@@ -162,6 +195,26 @@ fn render_content(content: &LatexContent) -> String {
             format!("\\fbox{{{}}}\n", escape_latex(message))
         }
     }
+}
+
+fn render_figure(image: &LatexImage) -> String {
+    format!(
+        "\\begin{{figure}}[h]\n\\centering\n\\includegraphics[width={:.2}pt,height={:.2}pt]{{{}}}\n\\end{{figure}}\n",
+        image.width_pt,
+        image.height_pt,
+        escape_latex(&image.relative_path)
+    )
+}
+
+fn render_itemize(items: &[String]) -> String {
+    let mut contenido = String::from("\\begin{itemize}\n");
+    for item in items {
+        contenido.push_str("\\item ");
+        contenido.push_str(&escape_latex(item));
+        contenido.push('\n');
+    }
+    contenido.push_str("\\end{itemize}\n");
+    contenido
 }
 
 fn render_paragraph(paragraph: &LatexParagraph) -> String {
@@ -316,5 +369,35 @@ mod tests {
         assert!(rendered.contains("\\begin{textblock*}{120.00pt}(24.00pt,42.00pt)"));
         assert!(rendered.contains("\\textbf{Hola \\& mundo}"));
         assert!(rendered.contains("\\newpage"));
+    }
+
+    #[test]
+    fn test_render_document_serializa_nodos_semanticos() {
+        let document = LatexDocument {
+            document_class: "article".to_string(),
+            packages: vec![LatexPackage {
+                name: "graphicx".to_string(),
+                options: Vec::new(),
+            }],
+            preamble: Vec::new(),
+            body: vec![
+                LatexNode::Section {
+                    title: "Capítulo uno".to_string(),
+                    numbered: false,
+                },
+                LatexNode::Paragraph(LatexParagraph {
+                    text: "Texto base".to_string(),
+                    alignment: AlignmentHint::Left,
+                    emphasis: EmphasisHint::Regular,
+                    font_scale: 1.0,
+                }),
+                LatexNode::Itemize(vec!["uno".to_string(), "dos".to_string()]),
+            ],
+        };
+
+        let rendered = render_document(&document);
+        assert!(rendered.contains("\\section*{Capítulo uno}"));
+        assert!(rendered.contains("\\par"));
+        assert!(rendered.contains("\\begin{itemize}"));
     }
 }

@@ -247,16 +247,39 @@ impl ExporterPort for DocxExporter {
     }
 }
 
-/// Exportador LaTeX con posicionamiento guiado por geometría OCR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LatexExportMode {
+    Semantic,
+    Facsimile,
+}
+
+/// Exportador LaTeX configurable entre reflujo semántico y facsímil.
 ///
-/// La ruta LaTeX prioriza fidelidad visual sobre pureza semántica: usa bloques
-/// absolutos cuando el blueprint indica que la posición importa.
-pub struct LatexExporter;
+/// El modo por defecto prioriza editabilidad y estructura. La ruta facsímil se
+/// conserva como constructor separado para casos donde la geometría del escaneo
+/// importe más que el reflujo del texto.
+pub struct LatexExporter {
+    mode: LatexExportMode,
+}
 
 impl LatexExporter {
-    /// Construye un exportador LaTeX sin estado interno.
+    /// Construye el exportador LaTeX semántico por defecto.
     pub fn new() -> Self {
-        Self
+        Self::new_semantic()
+    }
+
+    /// Construye el exportador LaTeX orientado a edición y estructura lógica.
+    pub fn new_semantic() -> Self {
+        Self {
+            mode: LatexExportMode::Semantic,
+        }
+    }
+
+    /// Construye el exportador LaTeX facsímil basado en posicionamiento.
+    pub fn new_facsimile() -> Self {
+        Self {
+            mode: LatexExportMode::Facsimile,
+        }
     }
 }
 
@@ -278,7 +301,14 @@ impl ExporterPort for LatexExporter {
             .file_name()
             .and_then(|valor| valor.to_str())
             .unwrap_or("documento_assets");
-        let plan = construir_plan_latex(job, &blueprint, nombre_directorio_assets)?;
+        let plan = match self.mode {
+            LatexExportMode::Semantic => {
+                construir_plan_latex_semantico(job, &blueprint, nombre_directorio_assets)?
+            }
+            LatexExportMode::Facsimile => {
+                construir_plan_latex_facsimil(job, &blueprint, nombre_directorio_assets)?
+            }
+        };
         for asset in &plan.assets {
             fs::write(directorio_assets.join(&asset.file_name), &asset.bytes)?;
         }
@@ -965,7 +995,133 @@ fn crear_xobject_imagen_pdf(
     Ok((xobj_id, format!("Im{}", xobj_id.0)))
 }
 
-fn construir_plan_latex(
+fn construir_plan_latex_semantico(
+    job: &Job,
+    blueprint: &crate::domain::DocumentBlueprint,
+    nombre_directorio_assets: &str,
+) -> Result<LatexExportPlan, ExportError> {
+    let mut body = Vec::new();
+    let mut assets = Vec::new();
+
+    for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+        let elementos_visibles: Vec<&ElementBlueprint> = pagina
+            .elements
+            .iter()
+            .filter(|elemento| !elemento.suspected_header && !elemento.suspected_footer)
+            .collect();
+        let body_len_inicial = body.len();
+        let mut indice = 0usize;
+
+        while indice < elementos_visibles.len() {
+            let elemento = elementos_visibles[indice];
+            match elemento.role {
+                ElementRole::Title => {
+                    let titulo = elemento.text.trim();
+                    if !titulo.is_empty() {
+                        body.push(LatexNode::Section {
+                            title: titulo.to_string(),
+                            numbered: false,
+                        });
+                    }
+                    indice += 1;
+                }
+                ElementRole::ListItem => {
+                    let mut items = Vec::new();
+                    while indice < elementos_visibles.len()
+                        && elementos_visibles[indice].role == ElementRole::ListItem
+                    {
+                        let texto = elementos_visibles[indice].text.trim();
+                        if !texto.is_empty() {
+                            items.push(texto.to_string());
+                        }
+                        indice += 1;
+                    }
+                    if !items.is_empty() {
+                        body.push(LatexNode::Itemize(items));
+                    }
+                }
+                ElementRole::Table => {
+                    if let Some(ref tabla) = elemento.table {
+                        body.push(LatexNode::Table(LatexTable {
+                            table: tabla.clone(),
+                            width_pt: px_a_pt(elemento.bounding_box.width),
+                        }));
+                    } else if let Some(parrafo) = construir_parrafo_latex(elemento) {
+                        body.push(LatexNode::Paragraph(parrafo));
+                    }
+                    indice += 1;
+                }
+                ElementRole::Figure
+                | ElementRole::Signature
+                | ElementRole::Stamp
+                | ElementRole::Formula => {
+                    if let Some(imagen) = construir_imagen_latex(
+                        job,
+                        elemento,
+                        &format!("page{}_element{}.png", pagina.number, indice + 1),
+                        nombre_directorio_assets,
+                        &mut assets,
+                    )? {
+                        body.push(LatexNode::Figure(imagen));
+                    } else if let Some(parrafo) = construir_parrafo_latex(elemento) {
+                        body.push(LatexNode::Paragraph(parrafo));
+                    }
+                    indice += 1;
+                }
+                ElementRole::Separator => {
+                    indice += 1;
+                }
+                _ => {
+                    if let Some(parrafo) = construir_parrafo_latex(elemento) {
+                        body.push(LatexNode::Paragraph(parrafo));
+                    }
+                    indice += 1;
+                }
+            }
+        }
+
+        if indice_pagina + 1 < blueprint.pages.len() && body.len() > body_len_inicial {
+            body.push(LatexNode::PageBreak);
+        }
+    }
+
+    Ok(LatexExportPlan {
+        document: LatexDocument {
+            document_class: "article".to_string(),
+            packages: vec![
+                LatexPackage {
+                    name: "geometry".to_string(),
+                    options: vec!["margin=72pt".to_string()],
+                },
+                LatexPackage {
+                    name: "graphicx".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "array".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "longtable".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "ragged2e".to_string(),
+                    options: Vec::new(),
+                },
+            ],
+            preamble: vec![
+                "\\setlength{\\parindent}{0pt}".to_string(),
+                "\\setlength{\\parskip}{0.6em}".to_string(),
+                "\\raggedbottom".to_string(),
+            ],
+            body,
+        },
+        assets,
+    })
+}
+
+fn construir_plan_latex_facsimil(
     job: &Job,
     blueprint: &crate::domain::DocumentBlueprint,
     nombre_directorio_assets: &str,
@@ -980,7 +1136,7 @@ fn construir_plan_latex(
     for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
         for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
             let nombre_asset = format!("page{}_element{}.png", pagina.number, indice_elemento + 1);
-            body.push(construir_nodo_latex(
+            body.push(construir_nodo_latex_facsimil(
                 job,
                 elemento,
                 &nombre_asset,
@@ -1038,7 +1194,7 @@ fn construir_plan_latex(
     })
 }
 
-fn construir_nodo_latex(
+fn construir_nodo_latex_facsimil(
     job: &Job,
     elemento: &ElementBlueprint,
     nombre_asset: &str,
@@ -1106,6 +1262,47 @@ fn construir_nodo_latex(
         y_pt,
         content,
     }))
+}
+
+fn construir_parrafo_latex(elemento: &ElementBlueprint) -> Option<LatexParagraph> {
+    let texto = elemento.text.trim();
+    if texto.is_empty() {
+        return None;
+    }
+
+    Some(LatexParagraph {
+        text: texto.to_string(),
+        alignment: elemento.style.alignment,
+        emphasis: elemento.style.emphasis,
+        font_scale: elemento.style.font_scale,
+    })
+}
+
+fn construir_imagen_latex(
+    job: &Job,
+    elemento: &ElementBlueprint,
+    nombre_asset: &str,
+    nombre_directorio_assets: &str,
+    assets: &mut Vec<LatexAsset>,
+) -> Result<Option<LatexImage>, ExportError> {
+    let Some(ref imagen) = elemento.image_crop else {
+        return Ok(None);
+    };
+
+    match recortar_imagen_desde_referencia(job, imagen.page_number, &imagen.bounding_box) {
+        Ok(bytes) => {
+            assets.push(LatexAsset {
+                file_name: nombre_asset.to_string(),
+                bytes,
+            });
+            Ok(Some(LatexImage {
+                relative_path: format!("{}/{}", nombre_directorio_assets, nombre_asset),
+                width_pt: px_a_pt(elemento.bounding_box.width),
+                height_pt: px_a_pt(elemento.bounding_box.height),
+            }))
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 fn docx_xml_elemento(
