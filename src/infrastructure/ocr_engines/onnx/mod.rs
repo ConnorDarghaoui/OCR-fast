@@ -12,6 +12,8 @@ pub mod model_downloader;
 pub mod orientation;
 /// Normalización de tensores por modelo.
 pub mod preprocessing;
+/// Aprovisionamiento de runtime y modelos previo a la carga del engine.
+pub mod runtime_provisioner;
 /// Reconstrucción de tablas con Table Transformer.
 pub mod table_analyzer;
 /// Detección de líneas/regiones de texto.
@@ -25,3 +27,5 @@ pub use engine::OnnxOcrEngine;
 pub use gpu_config::{inicializar as inicializar_gpu, EstadoGpu};
 /// Reexporta el gestor de modelos ONNX.
 pub use model_downloader::ModelDownloader;
+/// Reexporta el provisioner de runtime ONNX y su resultado materializado.
+pub use runtime_provisioner::{ModelRuntimeProvisioner, ProvisionedOnnxRuntime};

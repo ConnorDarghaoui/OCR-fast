@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 /// Alias público del puerto de almacenamiento para compatibilidad histórica.
 pub use crate::interfaces::ports::JobStorePort as JobStore;
@@ -117,14 +118,7 @@ pub struct FileJobStore {
 impl FileJobStore {
     /// Crea un store persistente en la ruta local estándar de OCRFast.
     pub fn new() -> Result<Self, JobStoreError> {
-        let ruta_archivo = dirs::data_local_dir()
-            .ok_or_else(|| {
-                JobStoreError::PersistenceError(
-                    "No se pudo obtener directorio local de datos".to_string(),
-                )
-            })?
-            .join("ocrfast")
-            .join("jobs.json");
+        let ruta_archivo = Self::ruta_estandar()?;
 
         Ok(Self { ruta_archivo })
     }
@@ -134,6 +128,48 @@ impl FileJobStore {
         Self {
             ruta_archivo: ruta.into(),
         }
+    }
+
+    /// Resuelve la ubicación persistente estándar del store para el usuario actual.
+    fn ruta_estandar() -> Result<PathBuf, JobStoreError> {
+        let directorio_datos = dirs::data_local_dir().ok_or_else(|| {
+            JobStoreError::PersistenceError(
+                "No se pudo obtener directorio local de datos del usuario".to_string(),
+            )
+        })?;
+
+        Ok(directorio_datos.join("ocrfast").join("jobs.json"))
+    }
+
+    /// Garantiza que el directorio padre exista y quede restringido al usuario.
+    fn asegurar_directorio_padre(&self) -> Result<PathBuf, JobStoreError> {
+        let directorio = self
+            .ruta_archivo
+            .parent()
+            .ok_or_else(|| {
+                JobStoreError::PersistenceError(
+                    "La ruta del almacén no tiene directorio padre".to_string(),
+                )
+            })?
+            .to_path_buf();
+
+        fs::create_dir_all(&directorio).map_err(|e| {
+            JobStoreError::PersistenceError(format!("Error creando directorio: {}", e))
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&directorio, fs::Permissions::from_mode(0o700)).map_err(|e| {
+                JobStoreError::PersistenceError(format!(
+                    "Error ajustando permisos del directorio: {}",
+                    e
+                ))
+            })?;
+        }
+
+        Ok(directorio)
     }
 
     /// Carga el mapa completo de jobs desde disco.
@@ -153,31 +189,72 @@ impl FileJobStore {
 
     /// Persiste el mapa completo de jobs en disco de forma atomica.
     fn persistir(&self, jobs: &HashMap<String, Job>) -> Result<(), JobStoreError> {
-        if let Some(directorio) = self.ruta_archivo.parent() {
-            fs::create_dir_all(directorio).map_err(|e| {
-                JobStoreError::PersistenceError(format!("Error creando directorio: {}", e))
-            })?;
-        }
+        let directorio = self.asegurar_directorio_padre()?;
 
         let json = serde_json::to_string_pretty(jobs).map_err(|e| {
             JobStoreError::PersistenceError(format!("Error serializando jobs: {}", e))
         })?;
 
-        let ruta_temporal = self.ruta_archivo.with_extension("tmp");
-        let mut archivo = fs::File::create(&ruta_temporal).map_err(|e| {
-            JobStoreError::PersistenceError(format!("Error creando archivo temporal: {}", e))
-        })?;
+        let nombre_temporal = format!(
+            ".{}.{}.tmp",
+            self.ruta_archivo
+                .file_name()
+                .and_then(|nombre| nombre.to_str())
+                .unwrap_or("jobs"),
+            Uuid::new_v4()
+        );
+        let ruta_temporal = directorio.join(nombre_temporal);
+        let mut archivo = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ruta_temporal)
+            .map_err(|e| {
+                JobStoreError::PersistenceError(format!("Error creando archivo temporal: {}", e))
+            })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            archivo
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|e| {
+                    JobStoreError::PersistenceError(format!(
+                        "Error ajustando permisos del temporal: {}",
+                        e
+                    ))
+                })?;
+        }
 
         archivo.write_all(json.as_bytes()).map_err(|e| {
             JobStoreError::PersistenceError(format!("Error escribiendo jobs: {}", e))
         })?;
-        archivo
-            .flush()
-            .map_err(|e| JobStoreError::PersistenceError(format!("Error en flush: {}", e)))?;
+        archivo.sync_all().map_err(|e| {
+            JobStoreError::PersistenceError(format!("Error sincronizando archivo temporal: {}", e))
+        })?;
+
+        drop(archivo);
 
         fs::rename(&ruta_temporal, &self.ruta_archivo).map_err(|e| {
             JobStoreError::PersistenceError(format!("Error en rename atomico: {}", e))
         })?;
+
+        #[cfg(unix)]
+        {
+            let directorio_sync = fs::File::open(&directorio).map_err(|e| {
+                JobStoreError::PersistenceError(format!(
+                    "Error abriendo directorio para sync: {}",
+                    e
+                ))
+            })?;
+
+            directorio_sync.sync_all().map_err(|e| {
+                JobStoreError::PersistenceError(format!(
+                    "Error sincronizando directorio del store: {}",
+                    e
+                ))
+            })?;
+        }
 
         log::debug!("Jobs persistidos en: {:?}", self.ruta_archivo);
         Ok(())
@@ -191,7 +268,9 @@ impl FileJobStore {
 
 impl Default for FileJobStore {
     fn default() -> Self {
-        Self::new().unwrap_or_else(|_| Self::with_path("/tmp/ocrfast_jobs.json"))
+        Self::new().expect(
+            "FileJobStore requiere un directorio local de datos valido; use FileJobStore::new() o FileJobStore::with_path(...)",
+        )
     }
 }
 

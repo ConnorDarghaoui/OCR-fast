@@ -1,15 +1,16 @@
 use crate::domain::errors::ExportError;
 use crate::domain::{
-    AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job, Page,
-    Rectangle, TableCellAlignment, TableStructure,
+    AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job,
+    OutputFormat, Page, Rectangle, TableCellAlignment, TableStructure,
 };
 use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
-use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort};
+use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort, JobExporterPort};
 use encoding_rs::WINDOWS_1252;
 use lopdf::dictionary;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 /// Alias público del puerto de exportación para compatibilidad histórica.
@@ -43,6 +44,55 @@ const HELVETICA_GLYPH_WIDTHS_ASCII: [u16; 95] = [
     667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500,
     222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
 ];
+
+/// Registro por defecto que resuelve exportadores concretos según `OutputFormat`.
+///
+/// La resolución vive en infraestructura para que la aplicación no dependa de
+/// constructores concretos ni replique el `match` en múltiples sitios.
+pub struct DefaultJobExporter {
+    txt: Arc<dyn ExporterPort>,
+    docx: Arc<dyn ExporterPort>,
+    latex: Arc<dyn ExporterPort>,
+    pdf: Arc<dyn ExporterPort>,
+    json: Arc<dyn ExporterPort>,
+}
+
+impl DefaultJobExporter {
+    /// Construye el registro con los exportadores integrados del producto.
+    pub fn new() -> Self {
+        Self {
+            txt: Arc::new(TxtExporter::new()),
+            docx: Arc::new(DocxExporter::new()),
+            latex: Arc::new(LatexExporter::new()),
+            pdf: Arc::new(PdfReconstructedExporter::new()),
+            json: Arc::new(JsonExporter::new()),
+        }
+    }
+
+    /// Resuelve el exportador concreto para el formato indicado.
+    fn exportador_para(&self, formato: OutputFormat) -> &dyn ExporterPort {
+        match formato {
+            OutputFormat::Txt => self.txt.as_ref(),
+            OutputFormat::Docx => self.docx.as_ref(),
+            OutputFormat::Latex => self.latex.as_ref(),
+            OutputFormat::Pdf => self.pdf.as_ref(),
+            OutputFormat::Json => self.json.as_ref(),
+        }
+    }
+}
+
+impl Default for DefaultJobExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl JobExporterPort for DefaultJobExporter {
+    fn export_job(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
+        self.exportador_para(job.formato_salida)
+            .export(job, output_path)
+    }
+}
 
 /// Exportador de documentos OCR a texto plano legible por humanos.
 pub struct TxtExporter;
@@ -374,7 +424,6 @@ impl ExporterPort for PdfReconstructedExporter {
                     &mut operaciones,
                 )?;
             }
-
             let content = Content {
                 operations: operaciones,
             };
