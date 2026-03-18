@@ -399,6 +399,7 @@ mod postprocessor_tests {
 
 #[cfg(test)]
 mod exporter_tests {
+    use encoding_rs::WINDOWS_1252;
     use ocrfast::domain::{
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableStructure,
@@ -645,6 +646,45 @@ mod exporter_tests {
         }
     }
 
+    fn job_texto_acentuado() -> Job {
+        Job {
+            id: "job-acentos".to_string(),
+            document: Document {
+                id: "exp-acentos".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/acentos.png"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 1200,
+                        height: 400,
+                    },
+                    image_data: Some(png_color_sintetico(1200, 400, [255, 255, 255])),
+                    blocks: vec![Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 80,
+                            y: 80,
+                            width: 1000,
+                            height: 80,
+                        },
+                        content: "Canción año útil Ñandú".to_string(),
+                        confidence: 0.97,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
+                    }],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
     #[test]
     fn test_txt_exporter_tabla_con_estructura_usa_texto_plano() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_txt");
@@ -815,6 +855,73 @@ mod exporter_tests {
         assert!(
             !xobjects.is_empty(),
             "La pagina debe contener el recorte de imagen del original"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_codifica_texto_winansi() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf_unicode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter.export(&job_texto_acentuado(), &ruta).unwrap();
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let paginas = pdf.get_pages();
+        let (&_numero_pagina, &page_id) = paginas
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe leerse");
+        let content = lopdf::content::Content::decode(&contenido)
+            .expect("El content stream debe decodificarse");
+        let texto_operacion = content
+            .operations
+            .iter()
+            .find(|op| op.operator == "Tj")
+            .and_then(|op| op.operands.first())
+            .and_then(|obj| obj.as_str().ok())
+            .expect("Debe existir al menos una operacion Tj con bytes de texto");
+        let (texto_decodificado, _, _) = WINDOWS_1252.decode(texto_operacion);
+        assert_eq!(texto_decodificado, "Canción año útil Ñandú");
+
+        let pagina = pdf
+            .get_dictionary(page_id)
+            .expect("La pagina debe exponer su diccionario");
+        let recursos_ref = pagina
+            .get(b"Resources")
+            .expect("La pagina debe tener recursos");
+        let recursos = recursos_ref
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .or_else(|| recursos_ref.as_dict().ok().cloned())
+            .expect("Los recursos de la pagina deben resolverse");
+        let fuentes = recursos
+            .get(b"Font")
+            .expect("La pagina debe exponer fuentes")
+            .as_dict()
+            .expect("El diccionario de fuentes debe ser directo");
+        let fuente = fuentes
+            .get(b"F1")
+            .expect("La fuente F1 debe existir")
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .expect("La fuente F1 debe resolverse");
+        assert_eq!(
+            fuente
+                .get(b"Encoding")
+                .expect("La fuente debe declarar Encoding")
+                .as_name()
+                .expect("El encoding debe ser un name"),
+            b"WinAnsiEncoding"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

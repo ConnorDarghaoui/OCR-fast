@@ -5,10 +5,12 @@ use crate::domain::{
 };
 use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort};
+use encoding_rs::WINDOWS_1252;
 use lopdf::dictionary;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 /// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
@@ -347,6 +349,7 @@ impl ExporterPort for PdfReconstructedExporter {
             "Type" => "Font",
             "Subtype" => "Type1",
             "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
         });
         let mut page_ids: Vec<Object> = Vec::new();
 
@@ -680,7 +683,7 @@ fn agregar_texto_pdf(
         ));
         operaciones.push(lopdf::content::Operation::new(
             "Tj",
-            vec![lopdf::Object::string_literal(linea.clone())],
+            vec![objeto_texto_pdf_helvetica(linea)],
         ));
         operaciones.push(lopdf::content::Operation::new("ET", vec![]));
     }
@@ -852,6 +855,46 @@ fn ancho_glifo_helvetica(caracter: char) -> f64 {
         HELVETICA_GLYPH_WIDTHS_ASCII[indice] as f64
     } else {
         HELVETICA_GLYPH_WIDTH_FALLBACK as f64
+    }
+}
+
+fn objeto_texto_pdf_helvetica(texto: &str) -> lopdf::Object {
+    lopdf::Object::String(
+        codificar_texto_pdf_helvetica(texto),
+        lopdf::StringFormat::Hexadecimal,
+    )
+}
+
+fn codificar_texto_pdf_helvetica(texto: &str) -> Vec<u8> {
+    texto
+        .chars()
+        .flat_map(codificar_caracter_pdf_helvetica)
+        .collect()
+}
+
+fn codificar_caracter_pdf_helvetica(caracter: char) -> Vec<u8> {
+    let original = caracter.to_string();
+    if let Some(bytes) = codificar_winansi_sin_reemplazo(&original) {
+        return bytes;
+    }
+
+    let ascii_aproximado = original
+        .nfd()
+        .filter(|c| !is_combining_mark(*c))
+        .collect::<String>();
+    if let Some(bytes) = codificar_winansi_sin_reemplazo(&ascii_aproximado) {
+        return bytes;
+    }
+
+    vec![b'?']
+}
+
+fn codificar_winansi_sin_reemplazo(texto: &str) -> Option<Vec<u8>> {
+    let (bytes, _, tuvo_reemplazos) = WINDOWS_1252.encode(texto);
+    if tuvo_reemplazos {
+        None
+    } else {
+        Some(bytes.into_owned())
     }
 }
 
