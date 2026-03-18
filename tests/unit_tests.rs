@@ -1101,6 +1101,114 @@ mod exporter_tests {
         }
     }
 
+    fn job_captura_marketplace_visual() -> Job {
+        let mut img = image::RgbImage::from_pixel(1440, 1800, image::Rgb([250, 250, 250]));
+        for y in 220..900 {
+            for x in 60..680 {
+                img.put_pixel(x, y, image::Rgb([220, 230, 245]));
+            }
+        }
+        for y in 250..320 {
+            for x in 760..1180 {
+                img.put_pixel(x, y, image::Rgb([255, 245, 210]));
+            }
+        }
+        for y in 370..460 {
+            for x in 760..1260 {
+                img.put_pixel(x, y, image::Rgb([210, 255, 220]));
+            }
+        }
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+
+        Job {
+            id: "job-captura-marketplace".to_string(),
+            document: Document {
+                id: "exp-captura-marketplace".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/captura-ebay.png"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 1440,
+                        height: 1800,
+                    },
+                    image_data: Some(buffer.into_inner()),
+                    blocks: vec![
+                        Block {
+                            block_type: BlockType::Image,
+                            bounding_box: Rectangle {
+                                x: 60,
+                                y: 220,
+                                width: 620,
+                                height: 680,
+                            },
+                            content: String::new(),
+                            confidence: 0.97,
+                            layout_confidence: Some(0.92),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 0,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 760,
+                                y: 250,
+                                width: 420,
+                                height: 70,
+                            },
+                            content: "Vintage camera listing".to_string(),
+                            confidence: 0.95,
+                            layout_confidence: Some(0.88),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 1,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 760,
+                                y: 370,
+                                width: 500,
+                                height: 90,
+                            },
+                            content: "$129.99 Buy it now".to_string(),
+                            confidence: 0.94,
+                            layout_confidence: Some(0.87),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 2,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 760,
+                                y: 520,
+                                width: 420,
+                                height: 120,
+                            },
+                            content: "Ships from Panama".to_string(),
+                            confidence: 0.93,
+                            layout_confidence: Some(0.86),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 3,
+                        },
+                    ],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
     #[test]
     fn test_txt_exporter_tabla_con_estructura_usa_texto_plano() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_txt");
@@ -1466,6 +1574,120 @@ mod exporter_tests {
         assert!(
             !texto_visible.contains("dudoso"),
             "El bloque de baja confianza no debe serializarse como texto PDF"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_preserva_captura_visual_completa() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf_visual_preservation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter
+            .export(&job_captura_marketplace_visual(), &ruta)
+            .unwrap();
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let (&_numero_pagina, &page_id) = pdf
+            .get_pages()
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe leerse");
+        let content = lopdf::content::Content::decode(&contenido)
+            .expect("El content stream debe decodificarse");
+
+        let operaciones_do = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Do")
+            .count();
+        let operaciones_tr_invisible = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Tr")
+            .count();
+        let textos: Vec<String> = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Tj")
+            .filter_map(|op| op.operands.first())
+            .filter_map(|obj| obj.as_str().ok())
+            .map(|bytes| WINDOWS_1252.decode(bytes).0.into_owned())
+            .collect();
+        let texto_overlay = textos.join(" ");
+
+        assert_eq!(
+            operaciones_do, 1,
+            "La preservacion visual debe incrustar una sola imagen base de pagina"
+        );
+        assert!(
+            operaciones_tr_invisible >= 1,
+            "La preservacion visual debe superponer texto invisible para busqueda"
+        );
+        assert!(
+            texto_overlay.contains("camera")
+                && texto_overlay.contains("Buy")
+                && texto_overlay.contains("now"),
+            "La preservacion visual debe mantener overlay OCR searchable"
+        );
+
+        let pagina = pdf
+            .get_dictionary(page_id)
+            .expect("La pagina debe exponer su diccionario");
+        let recursos_ref = pagina
+            .get(b"Resources")
+            .expect("La pagina debe tener recursos");
+        let recursos = recursos_ref
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .or_else(|| recursos_ref.as_dict().ok().cloned())
+            .expect("Los recursos de la pagina deben resolverse");
+        let xobjects = recursos
+            .get(b"XObject")
+            .ok()
+            .and_then(|obj| obj.as_dict().ok())
+            .expect("La pagina debe contener un XObject de fondo");
+        assert_eq!(
+            xobjects.len(),
+            1,
+            "La preservacion visual no debe fragmentar la captura en recortes extra"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_latex_exporter_modo_visual_degrada_a_imagen_de_pagina() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_visual_preservation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        let exporter = LatexExporter::new_facsimile();
+        exporter
+            .export(&job_captura_marketplace_visual(), &ruta)
+            .unwrap();
+
+        let contenido = std::fs::read_to_string(&ruta).unwrap();
+        assert!(
+            contenido.contains("page1\\_full.png"),
+            "La ruta visual debe degradar a asset de pagina completa"
+        );
+        assert!(
+            !contenido.contains("Vintage camera listing"),
+            "La salida LaTeX visual no debe reescribir la captura como parrafos"
+        );
+
+        let assets = dir.join("output_assets");
+        assert!(
+            assets.join("page1_full.png").exists(),
+            "La preservacion visual debe persistir la imagen completa de la pagina"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

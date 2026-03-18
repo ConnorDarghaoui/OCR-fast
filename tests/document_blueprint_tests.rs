@@ -1,6 +1,7 @@
 use ocrfast::application::pipeline::OcrPipeline;
 use ocrfast::domain::{
-    Block, BlockType, Dimensions, Document, ElementRole, Page, ProcessingProfile, Rectangle,
+    Block, BlockType, Dimensions, Document, ElementRole, Page, ProcessingMode, ProcessingProfile,
+    Rectangle,
 };
 use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
@@ -108,6 +109,36 @@ fn documento_con_header_footer_repetido() -> Document {
                 image_data: None,
             },
         ],
+        metadata: HashMap::new(),
+    }
+}
+
+fn documento_captura_marketplace() -> Document {
+    Document {
+        id: "doc-captura-marketplace".to_string(),
+        source_path: PathBuf::from("/tmp/captura-ebay.png"),
+        pages: vec![Page {
+            number: 1,
+            dimensions: Dimensions {
+                width: 1440,
+                height: 1800,
+            },
+            blocks: vec![
+                bloque(BlockType::Image, 60, 220, 620, 680, 0, ""),
+                bloque(
+                    BlockType::Text,
+                    760,
+                    250,
+                    420,
+                    70,
+                    1,
+                    "Vintage camera listing",
+                ),
+                bloque(BlockType::Text, 760, 370, 500, 90, 2, "$129.99 Buy it now"),
+                bloque(BlockType::Text, 760, 520, 420, 120, 3, "Ships from Panama"),
+            ],
+            image_data: None,
+        }],
         metadata: HashMap::new(),
     }
 }
@@ -231,4 +262,38 @@ fn test_pipeline_retorna_blueprint_sin_romper_documento_clasico() {
     assert_eq!(blueprint.pages[0].elements[0].role, ElementRole::Title);
     assert_eq!(blueprint.pages[0].elements[0].ocr_confidence, Some(0.90));
     assert_eq!(blueprint.pages[0].elements[0].layout_confidence, None);
+}
+
+#[test]
+fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
+    let builder = HighFidelityBlueprintBuilder::new();
+    let blueprint = builder
+        .build_blueprint(&documento_captura_marketplace())
+        .expect("El builder debe clasificar capturas visuales");
+
+    assert_eq!(
+        blueprint.processing_mode,
+        ProcessingMode::VisualPreservation
+    );
+    assert!(
+        blueprint.pages[0]
+            .elements
+            .iter()
+            .all(|elemento| elemento.total_columns == 1),
+        "Las capturas visuales no deben activar reflujo por columnas"
+    );
+    assert!(
+        blueprint.pages[0]
+            .elements
+            .iter()
+            .all(|elemento| elemento.style.preserve_positioning),
+        "Las capturas visuales deben preservar posicionamiento"
+    );
+    assert!(
+        !blueprint.pages[0]
+            .elements
+            .iter()
+            .any(|elemento| elemento.suspected_header || elemento.suspected_footer),
+        "Las capturas de interfaz no deben pasar por hints documentales de header/footer"
+    );
 }

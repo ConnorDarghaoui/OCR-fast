@@ -1,7 +1,7 @@
 use crate::domain::errors::LayoutError;
 use crate::domain::{
     AlignmentHint, Block, BlockType, Document, DocumentBlueprint, ElementBlueprint, ElementRole,
-    EmphasisHint, ImageCropRef, Page, PageBlueprint, StyleHints,
+    EmphasisHint, ImageCropRef, Page, PageBlueprint, ProcessingMode, StyleHints,
 };
 use crate::interfaces::ports::DocumentBlueprintBuilderPort;
 
@@ -30,7 +30,11 @@ impl HighFidelityBlueprintBuilder {
         Self
     }
 
-    fn construir_pagina(&self, pagina: &Page) -> Result<PageBlueprint, LayoutError> {
+    fn construir_pagina(
+        &self,
+        pagina: &Page,
+        processing_mode: ProcessingMode,
+    ) -> Result<PageBlueprint, LayoutError> {
         if pagina.dimensions.width == 0 || pagina.dimensions.height == 0 {
             return Err(LayoutError::SegmentationError(format!(
                 "pagina {} sin dimensiones validas para blueprint",
@@ -38,17 +42,27 @@ impl HighFidelityBlueprintBuilder {
             )));
         }
 
-        let total_columnas = estimar_columnas(&pagina.blocks, pagina.dimensions.width);
-        let bloques_ordenados =
-            ordenar_bloques_para_lectura(&pagina.blocks, pagina.dimensions.width);
+        let total_columnas = match processing_mode {
+            ProcessingMode::DocumentReconstruction => {
+                estimar_columnas(&pagina.blocks, pagina.dimensions.width)
+            }
+            ProcessingMode::VisualPreservation => 1,
+        };
+        let bloques_ordenados = match processing_mode {
+            ProcessingMode::DocumentReconstruction => {
+                ordenar_bloques_para_lectura(&pagina.blocks, pagina.dimensions.width)
+            }
+            ProcessingMode::VisualPreservation => ordenar_bloques_modo_visual(&pagina.blocks),
+        };
         let bases_columna = inferir_bases_columna(&bloques_ordenados, pagina.dimensions.width);
         let mut elementos = Vec::with_capacity(bloques_ordenados.len());
 
         for (indice, bloque) in bloques_ordenados.iter().enumerate() {
             let orden_lectura = indice as u32;
             let rol = mapear_rol(bloque.block_type);
-            let usa_dos_columnas =
-                total_columnas == 2 && !es_ancla_visual(bloque, pagina.dimensions.width);
+            let usa_dos_columnas = processing_mode == ProcessingMode::DocumentReconstruction
+                && total_columnas == 2
+                && !es_ancla_visual(bloque, pagina.dimensions.width);
             let columnas_elemento = if usa_dos_columnas { 2 } else { 1 };
             let indice_columna =
                 if usa_dos_columnas && centro_x(bloque) > pagina.dimensions.width / 2 {
@@ -73,6 +87,7 @@ impl HighFidelityBlueprintBuilder {
                 orden_lectura,
                 indice_columna,
                 columnas_elemento,
+                processing_mode,
                 spacing_before_pt,
                 left_indent_pt,
             ));
@@ -94,15 +109,19 @@ impl Default for HighFidelityBlueprintBuilder {
 
 impl DocumentBlueprintBuilderPort for HighFidelityBlueprintBuilder {
     fn build_blueprint(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError> {
+        let processing_mode = inferir_processing_mode(document);
         let mut paginas = Vec::with_capacity(document.pages.len());
         for pagina in &document.pages {
-            paginas.push(self.construir_pagina(pagina)?);
+            paginas.push(self.construir_pagina(pagina, processing_mode)?);
         }
-        marcar_hints_encabezado_pie(&mut paginas);
+        if processing_mode == ProcessingMode::DocumentReconstruction {
+            marcar_hints_encabezado_pie(&mut paginas);
+        }
 
         Ok(DocumentBlueprint {
             document_id: document.id.clone(),
             source_path: document.source_path.to_string_lossy().into_owned(),
+            processing_mode,
             pages: paginas,
         })
     }
@@ -166,6 +185,18 @@ fn ordenar_bloques_para_lectura<'a>(bloques: &'a [Block], ancho_pagina: u32) -> 
     orden
 }
 
+fn ordenar_bloques_modo_visual<'a>(bloques: &'a [Block]) -> Vec<&'a Block> {
+    let mut bloques_base: Vec<&Block> = bloques.iter().collect();
+    bloques_base.sort_by_key(|bloque| {
+        (
+            bloque.reading_order,
+            bloque.bounding_box.y,
+            bloque.bounding_box.x,
+        )
+    });
+    bloques_base
+}
+
 fn ordenar_segmento_en_columnas<'a>(bloques: Vec<&'a Block>, ancho_pagina: u32) -> Vec<&'a Block> {
     let mut izquierda = Vec::new();
     let mut derecha = Vec::new();
@@ -192,6 +223,7 @@ fn construir_elemento(
     orden_lectura: u32,
     indice_columna: u32,
     total_columnas: u32,
+    processing_mode: ProcessingMode,
     spacing_before_pt: f32,
     left_indent_pt: f32,
 ) -> ElementBlueprint {
@@ -213,6 +245,7 @@ fn construir_elemento(
             bloque,
             rol,
             total_columnas,
+            processing_mode,
             spacing_before_pt,
             left_indent_pt,
         ),
@@ -242,6 +275,7 @@ fn inferir_estilo(
     bloque: &Block,
     rol: ElementRole,
     total_columnas: u32,
+    processing_mode: ProcessingMode,
     spacing_before_pt: f32,
     left_indent_pt: f32,
 ) -> StyleHints {
@@ -277,15 +311,17 @@ fn inferir_estilo(
         _ => 1.0,
     };
 
-    let preserve_positioning = matches!(
-        rol,
-        ElementRole::Table
-            | ElementRole::Figure
-            | ElementRole::Formula
-            | ElementRole::Signature
-            | ElementRole::Stamp
-            | ElementRole::Separator
-    ) || total_columnas > 1;
+    let preserve_positioning = processing_mode == ProcessingMode::VisualPreservation
+        || matches!(
+            rol,
+            ElementRole::Table
+                | ElementRole::Figure
+                | ElementRole::Formula
+                | ElementRole::Signature
+                | ElementRole::Stamp
+                | ElementRole::Separator
+        )
+        || total_columnas > 1;
 
     StyleHints {
         alignment: alineacion,
@@ -296,6 +332,100 @@ fn inferir_estilo(
         keep_with_next: matches!(rol, ElementRole::Title | ElementRole::Separator),
         preserve_positioning,
     }
+}
+
+fn inferir_processing_mode(document: &Document) -> ProcessingMode {
+    if document.pages.is_empty() {
+        return ProcessingMode::DocumentReconstruction;
+    }
+
+    let fuente_raster = document
+        .source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "bmp"
+            )
+        });
+
+    let paginas_visuales = document
+        .pages
+        .iter()
+        .filter(|pagina| parece_pagina_visual(pagina, fuente_raster))
+        .count();
+
+    if paginas_visuales > 0 && paginas_visuales * 2 >= document.pages.len() {
+        ProcessingMode::VisualPreservation
+    } else {
+        ProcessingMode::DocumentReconstruction
+    }
+}
+
+fn parece_pagina_visual(pagina: &Page, fuente_raster: bool) -> bool {
+    let area_pagina =
+        (pagina.dimensions.width.max(1) as f64) * (pagina.dimensions.height.max(1) as f64);
+    let mut area_imagen_total = 0.0f64;
+    let mut area_imagen_maxima = 0.0f64;
+    let mut area_texto_total = 0.0f64;
+    let mut bloques_textuales = 0usize;
+    let mut bloques_textuales_anchos = 0usize;
+    let mut bloques_titulo = 0usize;
+    let mut bloques_tabla = 0usize;
+
+    for bloque in &pagina.blocks {
+        let area_bloque = (bloque.bounding_box.width as f64) * (bloque.bounding_box.height as f64);
+        let ratio_ancho = bloque.bounding_box.width as f64 / pagina.dimensions.width.max(1) as f64;
+
+        match bloque.block_type {
+            BlockType::Image => {
+                area_imagen_total += area_bloque;
+                area_imagen_maxima = area_imagen_maxima.max(area_bloque);
+            }
+            BlockType::Text | BlockType::List | BlockType::Formula => {
+                area_texto_total += area_bloque;
+                bloques_textuales += 1;
+                if ratio_ancho >= 0.55 {
+                    bloques_textuales_anchos += 1;
+                }
+            }
+            BlockType::Title => {
+                area_texto_total += area_bloque;
+                bloques_textuales += 1;
+                bloques_titulo += 1;
+                if ratio_ancho >= 0.55 {
+                    bloques_textuales_anchos += 1;
+                }
+            }
+            BlockType::Table => {
+                area_texto_total += area_bloque;
+                bloques_textuales += 1;
+                bloques_tabla += 1;
+                if ratio_ancho >= 0.55 {
+                    bloques_textuales_anchos += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let ratio_imagen_total = area_imagen_total / area_pagina;
+    let ratio_imagen_maxima = area_imagen_maxima / area_pagina;
+    let ratio_texto_total = area_texto_total / area_pagina;
+
+    let tiene_imagen_destacada = ratio_imagen_maxima >= 0.12 || ratio_imagen_total >= 0.18;
+    let sin_semantica_documental = bloques_titulo == 0 && bloques_tabla == 0;
+    let texto_fragmentado = bloques_textuales >= 2 && bloques_textuales_anchos <= 1;
+    let poca_cobertura_textual = ratio_texto_total <= 0.33;
+    let parece_ui_fragmentada =
+        fuente_raster && bloques_textuales >= 3 && bloques_textuales_anchos == 0;
+
+    fuente_raster
+        && ((tiene_imagen_destacada
+            && sin_semantica_documental
+            && (texto_fragmentado || poca_cobertura_textual))
+            || (parece_ui_fragmentada && poca_cobertura_textual))
 }
 
 fn inferir_bases_columna(bloques: &[&Block], ancho_pagina: u32) -> [u32; 2] {

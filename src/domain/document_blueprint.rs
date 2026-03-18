@@ -12,8 +12,24 @@ pub struct DocumentBlueprint {
     pub document_id: String,
     /// Ruta original serializada para trazabilidad de exportación.
     pub source_path: String,
+    /// Estrategia de reconstrucción elegida para este documento.
+    pub processing_mode: ProcessingMode,
     /// Páginas reconstruidas del documento.
     pub pages: Vec<PageBlueprint>,
+}
+
+/// Estrategia de reconstrucción visual aplicada al documento.
+///
+/// `DocumentReconstruction` asume un documento clásico y habilita heurísticas
+/// de orden de lectura, columnas y hints semánticos. `VisualPreservation`
+/// desactiva reinterpretaciones agresivas y prioriza mantener la página
+/// original como verdad visual.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum ProcessingMode {
+    /// Reconstrucción documental con reordenamiento y enriquecimiento semántico.
+    DocumentReconstruction,
+    /// Preservación visual de la página con OCR auxiliar para búsqueda.
+    VisualPreservation,
 }
 
 /// Vista de una página lista para exportación visual.
