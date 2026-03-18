@@ -769,6 +769,8 @@ fn agregar_tabla_pdf(
                 column_index: 0,
                 total_columns: 1,
                 text: celda.content.clone(),
+                ocr_confidence: elemento.ocr_confidence,
+                layout_confidence: elemento.layout_confidence,
                 table: None,
                 image_crop: None,
                 style: elemento.style.clone(),

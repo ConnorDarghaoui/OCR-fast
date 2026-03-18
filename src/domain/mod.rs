@@ -160,8 +160,13 @@ pub struct Block {
     pub bounding_box: Rectangle,
     /// Contenido textual extraido (vacio si no aplica o aun no procesado).
     pub content: String,
-    /// Nivel de confianza de la deteccion (0.0 a 1.0).
+    /// Nivel de confianza OCR o de extracción final (0.0 a 1.0).
     pub confidence: f64,
+    /// Señal de confianza proveniente de layout si existió esa etapa.
+    ///
+    /// Se mantiene separada de `confidence` porque el OCR puede sobrescribir su
+    /// propia confianza sin destruir la señal estructural original del detector.
+    pub layout_confidence: Option<f64>,
     /// Imagen recortada embebida (para figuras, sellos, firmas).
     /// No se persiste: dato derivado de gran tamano.
     #[serde(skip)]

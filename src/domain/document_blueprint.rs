@@ -42,6 +42,10 @@ pub struct ElementBlueprint {
     pub total_columns: u32,
     /// Contenido textual cuando aplica.
     pub text: String,
+    /// Confianza del OCR asociada al bloque, si existe una lectura textual.
+    pub ocr_confidence: Option<f32>,
+    /// Confianza del detector de layout, si la etapa estuvo presente.
+    pub layout_confidence: Option<f32>,
     /// Estructura tabular cuando el elemento representa una tabla.
     pub table: Option<TableStructure>,
     /// Referencia de recorte para imágenes preservadas del original.

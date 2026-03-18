@@ -29,6 +29,7 @@ fn bloque(
         },
         content: content.to_string(),
         confidence: 0.98,
+        layout_confidence: Some(0.91),
         embedded_image: None,
         table_structure: None,
         reading_order,
@@ -70,6 +71,8 @@ fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
     assert_eq!(pagina.elements[0].role, ElementRole::Title);
     assert_eq!(pagina.elements[0].total_columns, 1);
     assert!(pagina.elements[0].style.keep_with_next);
+    assert_eq!(pagina.elements[0].ocr_confidence, Some(0.98));
+    assert_eq!(pagina.elements[0].layout_confidence, Some(0.91));
 
     let parrafos: Vec<_> = pagina
         .elements
@@ -151,4 +154,6 @@ fn test_pipeline_retorna_blueprint_sin_romper_documento_clasico() {
         resultado.document.pages[0].blocks.len()
     );
     assert_eq!(blueprint.pages[0].elements[0].role, ElementRole::Title);
+    assert_eq!(blueprint.pages[0].elements[0].ocr_confidence, Some(0.90));
+    assert_eq!(blueprint.pages[0].elements[0].layout_confidence, None);
 }

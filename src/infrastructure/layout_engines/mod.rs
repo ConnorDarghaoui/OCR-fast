@@ -190,6 +190,7 @@ impl LayoutEnginePort for XyCutLayoutEngine {
                     },
                     content: String::new(),
                     confidence: 0.80,
+                    layout_confidence: Some(0.80),
                     embedded_image: None,
                     table_structure: None,
                     reading_order: orden_lectura,

@@ -201,6 +201,8 @@ fn construir_elemento(
         column_index: indice_columna,
         total_columns: total_columnas,
         text: bloque.content.clone(),
+        ocr_confidence: Some(bloque.confidence as f32),
+        layout_confidence: bloque.layout_confidence.map(|valor| valor as f32),
         table: bloque.table_structure.clone(),
         image_crop: construir_referencia_imagen(pagina.number, bloque, rol),
         style: inferir_estilo(
