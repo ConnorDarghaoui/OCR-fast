@@ -1,4 +1,4 @@
-use crate::application::pipeline::{PipelineEvent, MSG_JOB_CANCELADO};
+use crate::application::pipeline::{PipelineEvent, PipelineFailure};
 use crate::application::tui::engine_bootstrap::EngineBootstrapState;
 use crate::application::tui::job_runtime::JobRuntimeState;
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
@@ -469,18 +469,19 @@ impl AppState {
                         ));
                         trabajos_terminados.push(lote.id_trabajo.clone());
                     }
-                    PipelineEvent::Error(mensaje) => {
-                        let es_cancelacion = mensaje == MSG_JOB_CANCELADO;
-
+                    PipelineEvent::Error(error) => {
                         if let Some(trabajo) =
                             self.trabajos.iter_mut().find(|j| j.id == lote.id_trabajo)
                         {
-                            if es_cancelacion {
-                                trabajo.status = JobStatus::Cancelled;
-                                trabajo.error_message = None;
-                            } else {
-                                trabajo.status = JobStatus::Failed;
-                                trabajo.error_message = Some(mensaje.clone());
+                            match &error {
+                                PipelineFailure::Cancelado => {
+                                    trabajo.status = JobStatus::Cancelled;
+                                    trabajo.error_message = None;
+                                }
+                                PipelineFailure::Fase { .. } => {
+                                    trabajo.status = JobStatus::Failed;
+                                    trabajo.error_message = Some(error.to_string());
+                                }
                             }
 
                             if let Err(e) = self.job_store.update(trabajo) {
@@ -491,26 +492,29 @@ impl AppState {
                                 );
                             }
 
-                            if es_cancelacion {
-                                self.loguear(format!(
-                                    "Trabajo {} cancelado",
-                                    &lote.id_trabajo[..8]
-                                ));
-                                self.mostrar_estado(format!(
-                                    "Job {} cancelado",
-                                    &lote.id_trabajo[..8]
-                                ));
-                            } else {
-                                self.loguear(format!(
-                                    "Error en trabajo {}: {}",
-                                    &lote.id_trabajo[..8],
-                                    mensaje
-                                ));
-                                self.mostrar_estado(format!(
-                                    "Error en {}: {}",
-                                    &lote.id_trabajo[..8],
-                                    mensaje
-                                ));
+                            match &error {
+                                PipelineFailure::Cancelado => {
+                                    self.loguear(format!(
+                                        "Trabajo {} cancelado",
+                                        &lote.id_trabajo[..8]
+                                    ));
+                                    self.mostrar_estado(format!(
+                                        "Job {} cancelado",
+                                        &lote.id_trabajo[..8]
+                                    ));
+                                }
+                                PipelineFailure::Fase { .. } => {
+                                    self.loguear(format!(
+                                        "Error en trabajo {}: {}",
+                                        &lote.id_trabajo[..8],
+                                        error
+                                    ));
+                                    self.mostrar_estado(format!(
+                                        "Error en {}: {}",
+                                        &lote.id_trabajo[..8],
+                                        error
+                                    ));
+                                }
                             }
                         }
                         trabajos_terminados.push(lote.id_trabajo.clone());

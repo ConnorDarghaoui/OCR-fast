@@ -75,28 +75,32 @@ impl EngineBootstrapState {
     pub(crate) fn iniciar_carga(&mut self) {
         let (tx, rx) = std::sync::mpsc::channel::<MotorCargaEvento>();
         self.receptor = Some(rx);
+        self.motor_cargado = false;
+        self.motor_fallido = false;
         self.progreso = 0.0;
         self.fase = "Verificando modelos...".to_string();
         self.bytes_actual = 0;
         self.bytes_total = 0;
+        self.gpu_info.clear();
 
         std::thread::spawn(move || {
             use crate::infrastructure::ocr_engines::onnx::{
-                gpu_config, ModelDownloader, OnnxOcrEngine,
+                EstadoGpu, ModelRuntimeProvisioner, OnnxOcrEngine,
             };
-
-            let estado_gpu = gpu_config::inicializar(0);
-            let _ = tx.send(MotorCargaEvento::GpuInfo {
-                backend: estado_gpu.backend_compilado.to_string(),
-                activo: estado_gpu.inicializado && estado_gpu.es_gpu,
-            });
-
-            let downloader = match ModelDownloader::new() {
-                Ok(downloader) => downloader,
+            let provisioner = match ModelRuntimeProvisioner::new() {
+                Ok(provisioner) => provisioner,
                 Err(error) => {
                     let _ = tx.send(MotorCargaEvento::Error(error.to_string()));
                     return;
                 }
+            };
+
+            let tx_gpu = tx.clone();
+            let on_gpu = |estado_gpu: &EstadoGpu| {
+                let _ = tx_gpu.send(MotorCargaEvento::GpuInfo {
+                    backend: estado_gpu.backend_compilado.to_string(),
+                    activo: estado_gpu.inicializado && estado_gpu.es_gpu,
+                });
             };
 
             let tx_archivo = tx.clone();
@@ -116,16 +120,16 @@ impl EngineBootstrapState {
                 });
             };
 
-            let ruta_modelos =
-                match downloader.asegurar_todos_los_modelos(Some(&on_archivo), Some(&on_bytes)) {
-                    Ok(ruta) => ruta,
+            let runtime =
+                match provisioner.provision(Some(&on_gpu), Some(&on_archivo), Some(&on_bytes)) {
+                    Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = tx.send(MotorCargaEvento::Error(error.to_string()));
                         return;
                     }
                 };
 
-            match OnnxOcrEngine::from_directory(&ruta_modelos) {
+            match OnnxOcrEngine::from_provisioned_runtime(&runtime) {
                 Ok(engine) => {
                     let _ = tx.send(MotorCargaEvento::Listo(Arc::new(engine)));
                 }

@@ -74,7 +74,7 @@ impl JobRuntimeState {
                     let _ = tx.send(PipelineEvent::Completado(documento));
                 }
                 Err(error) => {
-                    let _ = tx.send(PipelineEvent::Error(error.to_string()));
+                    let _ = tx.send(PipelineEvent::Error(error));
                 }
             }
         });
