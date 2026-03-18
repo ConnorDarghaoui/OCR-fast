@@ -403,8 +403,9 @@ mod exporter_tests {
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableStructure,
     };
+    use ocrfast::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
     use ocrfast::infrastructure::exporters::{JsonExporter, MarkdownExporter};
-    use ocrfast::interfaces::ports::ExporterPort;
+    use ocrfast::interfaces::ports::{DocumentAssemblerPort, ExporterPort};
     use std::collections::HashMap;
 
     fn job_con_tabla(con_estructura: bool) -> Job {
@@ -569,6 +570,76 @@ mod exporter_tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&contenido).expect("El JSON generado debe ser valido");
         assert_eq!(parsed["id"], "job-exp");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_markdown_exporta_en_orden_de_lectura_canonico() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_md_order");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.md");
+
+        let mut job = job_con_tabla(false);
+        job.document.pages[0].blocks = vec![
+            Block {
+                block_type: BlockType::Text,
+                bounding_box: Rectangle {
+                    x: 180,
+                    y: 20,
+                    width: 80,
+                    height: 20,
+                },
+                content: "Columna derecha".to_string(),
+                confidence: 0.9,
+                embedded_image: None,
+                table_structure: None,
+                reading_order: 9,
+            },
+            Block {
+                block_type: BlockType::Title,
+                bounding_box: Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 280,
+                    height: 20,
+                },
+                content: "Titulo".to_string(),
+                confidence: 0.95,
+                embedded_image: None,
+                table_structure: None,
+                reading_order: 4,
+            },
+            Block {
+                block_type: BlockType::Text,
+                bounding_box: Rectangle {
+                    x: 10,
+                    y: 20,
+                    width: 80,
+                    height: 20,
+                },
+                content: "Columna izquierda".to_string(),
+                confidence: 0.9,
+                embedded_image: None,
+                table_structure: None,
+                reading_order: 7,
+            },
+        ];
+
+        LayoutGuidedDocumentAssembler::new()
+            .assemble(&mut job.document)
+            .unwrap();
+
+        let exporter = MarkdownExporter::new();
+        exporter.export(&job, &ruta).unwrap();
+
+        let contenido = std::fs::read_to_string(&ruta).unwrap();
+        let indice_titulo = contenido.find("### Titulo").unwrap();
+        let indice_izquierda = contenido.find("Columna izquierda").unwrap();
+        let indice_derecha = contenido.find("Columna derecha").unwrap();
+
+        assert!(indice_titulo < indice_izquierda);
+        assert!(indice_izquierda < indice_derecha);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

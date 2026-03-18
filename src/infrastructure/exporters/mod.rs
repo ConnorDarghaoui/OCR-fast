@@ -50,7 +50,7 @@ impl ExporterPort for MarkdownExporter {
         for page in &job.document.pages {
             content.push_str(&format!("## Pagina {}\n\n", page.number));
 
-            for block in &page.blocks {
+            for block in bloques_ordenados(page) {
                 match block.block_type {
                     BlockType::Title => {
                         content.push_str(&format!("### {}\n\n", block.content));
@@ -209,9 +209,8 @@ impl ExporterPort for PdfSandwichExporter {
             }
 
             let mut operaciones_texto: Vec<Operation> = Vec::new();
-            let bloques_con_texto: Vec<_> = pagina
-                .blocks
-                .iter()
+            let bloques_con_texto: Vec<_> = bloques_ordenados(pagina)
+                .into_iter()
                 .filter(|b| !b.content.trim().is_empty())
                 .collect();
 
@@ -386,4 +385,16 @@ impl ExporterPort for JsonExporter {
     fn format_name(&self) -> &str {
         "JSON"
     }
+}
+
+/// Retorna una vista estable de bloques ordenados por `reading_order`.
+fn bloques_ordenados(pagina: &crate::domain::Page) -> Vec<&crate::domain::Block> {
+    let mut bloques: Vec<_> = pagina.blocks.iter().collect();
+    bloques.sort_by(|a, b| {
+        a.reading_order
+            .cmp(&b.reading_order)
+            .then(a.bounding_box.y.cmp(&b.bounding_box.y))
+            .then(a.bounding_box.x.cmp(&b.bounding_box.x))
+    });
+    bloques
 }

@@ -1,3 +1,5 @@
+/// Reconstrucción final del documento guiada por layout.
+pub mod document_assemblers;
 /// Adaptadores concretos de parsing y render de documentos.
 pub mod document_parsers;
 /// Materializadores de salida para Markdown, PDF y JSON.
@@ -13,6 +15,8 @@ pub mod postprocessors;
 /// Transformaciones raster previas a inferencia.
 pub mod preprocessors;
 
+/// Reexporta ensambladores de documento concretos.
+pub use document_assemblers::*;
 /// Reexporta exportadores concretos para integración directa.
 pub use exporters::*;
 /// Reexporta stores concretos listos para uso local.

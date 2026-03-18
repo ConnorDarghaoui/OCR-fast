@@ -1,5 +1,6 @@
 use crate::application::pipeline::{OcrPipeline, PipelineEvent, MSG_JOB_CANCELADO};
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
+use crate::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
 use crate::infrastructure::exporters::{JsonExporter, MarkdownExporter, PdfSandwichExporter};
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
 use crate::infrastructure::postprocessors::TextPostprocessor;
@@ -401,8 +402,10 @@ impl AppState {
 
         std::thread::spawn(move || {
             let postprocesador = TextPostprocessor::new().with_language(&idioma.primary);
+            let ensamblador = Arc::new(LayoutGuidedDocumentAssembler::new());
             let mut pipeline = OcrPipeline::new(analizador, Arc::clone(&motor))
-                .with_postprocessor(Arc::new(postprocesador));
+                .with_postprocessor(Arc::new(postprocesador))
+                .with_document_assembler(ensamblador);
 
             if !motor.provides_layout() {
                 use crate::infrastructure::layout_engines::XyCutLayoutEngine;
