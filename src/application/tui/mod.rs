@@ -1,10 +1,16 @@
 /// Estado reactivo y coordinación de jobs de la TUI.
 pub mod app_state;
+/// Coordinación del bootstrap ONNX fuera del estado renderizable.
+mod engine_bootstrap;
 /// Loop de eventos de teclado y mouse desacoplado del render.
 pub mod events;
+/// Coordinación de jobs OCR en background y su progreso visible.
+mod job_runtime;
 /// Render puro de widgets y composición visual.
 pub mod ui;
 
+use crate::infrastructure::exporters::DefaultJobExporter;
+use crate::infrastructure::layout_engines::DefaultLayoutEngineFactory;
 use crate::interfaces::ports::{DocumentParserPort, JobStorePort, OcrEnginePort};
 use app_state::{AppState, ViewMode};
 use crossterm::{
@@ -64,12 +70,18 @@ pub fn run(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = AppState::nuevo(parser, ocr_engine, job_store);
+    let mut app = AppState::nuevo(
+        parser,
+        ocr_engine,
+        job_store,
+        Arc::new(DefaultLayoutEngineFactory::new()),
+        Arc::new(DefaultJobExporter::new()),
+    );
 
     if cargar_onnx {
         app.iniciar_carga_motor();
     } else {
-        app.motor_cargado = true;
+        app.marcar_motor_listo();
         app.vista_actual = ViewMode::JobList;
     }
 
