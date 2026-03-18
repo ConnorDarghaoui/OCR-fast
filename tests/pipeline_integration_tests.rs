@@ -3,13 +3,15 @@ use ocrfast::application::pipeline::{
     RefinementContext, RefinementPass, RefinementStage,
 };
 use ocrfast::domain::errors::DocumentError;
-use ocrfast::domain::errors::OcrError;
+use ocrfast::domain::errors::{LayoutError, OcrError};
 use ocrfast::domain::{
     Block, BlockType, Dimensions, Document, DocumentBlueprint, Page, ProcessingProfile, Rectangle,
 };
 use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
-use ocrfast::interfaces::ports::{DocumentParserPort, OcrEnginePort, PostprocessorPort};
+use ocrfast::interfaces::ports::{
+    DocumentAssemblerPort, DocumentParserPort, OcrEnginePort, PostprocessorPort,
+};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{mpsc, Arc};
@@ -201,6 +203,41 @@ impl OcrEnginePort for OcrEngineDeRefuerzo {
 
     fn name(&self) -> &str {
         "OcrEngineDeRefuerzo"
+    }
+}
+
+struct EnsambladorRegistrador {
+    llamado: std::sync::Mutex<bool>,
+}
+
+impl EnsambladorRegistrador {
+    fn new() -> Self {
+        Self {
+            llamado: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn fue_llamado(&self) -> bool {
+        *self.llamado.lock().unwrap()
+    }
+}
+
+impl DocumentAssemblerPort for EnsambladorRegistrador {
+    fn assemble(&self, document: &mut Document) -> Result<(), LayoutError> {
+        *self.llamado.lock().unwrap() = true;
+
+        for pagina in &mut document.pages {
+            pagina.blocks.reverse();
+            for (indice, bloque) in pagina.blocks.iter_mut().enumerate() {
+                bloque.reading_order = indice as u32;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "EnsambladorRegistrador"
     }
 }
 
@@ -503,5 +540,25 @@ fn test_pipeline_confidence_boost_mejora_solo_bloques_debiles() {
     assert!(
         (documento.pages[0].blocks[1].confidence - 0.93).abs() < f64::EPSILON,
         "El bloque ya confiable no debe reescribirse por una mejora marginal"
+    );
+}
+
+#[test]
+fn test_pipeline_invoca_ensamblador_documento() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let ensamblador = Arc::new(EnsambladorRegistrador::new());
+    let ensamblador_ref = Arc::clone(&ensamblador);
+
+    let pipeline = OcrPipeline::new(parser, ocr).with_document_assembler(ensamblador);
+
+    let ruta = Path::new("/tmp/doc_assembler.pdf");
+    pipeline
+        .procesar_documento(ruta, &ProcessingProfile::Balanced, None, None)
+        .expect("Pipeline debe completar ensamblado");
+
+    assert!(
+        ensamblador_ref.fue_llamado(),
+        "El ensamblador final debe ejecutarse al final del pipeline"
     );
 }
