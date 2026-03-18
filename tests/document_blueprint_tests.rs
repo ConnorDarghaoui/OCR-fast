@@ -60,6 +60,58 @@ fn documento_dos_columnas() -> Document {
     }
 }
 
+fn documento_con_header_footer_repetido() -> Document {
+    Document {
+        id: "doc-header-footer".to_string(),
+        source_path: PathBuf::from("/tmp/libro-header-footer.pdf"),
+        pages: vec![
+            Page {
+                number: 1,
+                dimensions: Dimensions {
+                    width: 1200,
+                    height: 1800,
+                },
+                blocks: vec![
+                    bloque(BlockType::Text, 110, 55, 980, 55, 0, "Historia Universal"),
+                    bloque(
+                        BlockType::Text,
+                        110,
+                        210,
+                        900,
+                        180,
+                        1,
+                        "contenido pagina uno",
+                    ),
+                    bloque(BlockType::Text, 110, 1650, 980, 45, 2, "Pagina 1"),
+                ],
+                image_data: None,
+            },
+            Page {
+                number: 2,
+                dimensions: Dimensions {
+                    width: 1200,
+                    height: 1800,
+                },
+                blocks: vec![
+                    bloque(BlockType::Text, 112, 58, 978, 55, 0, "Historia Universal"),
+                    bloque(
+                        BlockType::Text,
+                        110,
+                        195,
+                        900,
+                        180,
+                        1,
+                        "contenido pagina dos distinto",
+                    ),
+                    bloque(BlockType::Text, 108, 1652, 982, 45, 2, "Pagina 2"),
+                ],
+                image_data: None,
+            },
+        ],
+        metadata: HashMap::new(),
+    }
+}
+
 #[test]
 fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
     let builder = HighFidelityBlueprintBuilder::new();
@@ -73,6 +125,8 @@ fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
     assert!(pagina.elements[0].style.keep_with_next);
     assert_eq!(pagina.elements[0].ocr_confidence, Some(0.98));
     assert_eq!(pagina.elements[0].layout_confidence, Some(0.91));
+    assert!(!pagina.elements[0].suspected_header);
+    assert!(!pagina.elements[0].suspected_footer);
 
     let parrafos: Vec<_> = pagina
         .elements
@@ -119,6 +173,27 @@ fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
     assert_eq!(recorte.page_number, 1);
     assert_eq!(recorte.bounding_box.x, 150);
     assert_eq!(recorte.bounding_box.width, 380);
+}
+
+#[test]
+fn test_blueprint_marca_hints_conservadores_para_header_y_footer() {
+    let builder = HighFidelityBlueprintBuilder::new();
+    let blueprint = builder
+        .build_blueprint(&documento_con_header_footer_repetido())
+        .expect("El builder debe producir blueprint con hints");
+
+    let pagina_uno = &blueprint.pages[0];
+    let pagina_dos = &blueprint.pages[1];
+
+    assert!(pagina_uno.elements[0].suspected_header);
+    assert!(pagina_dos.elements[0].suspected_header);
+    assert!(pagina_uno.elements[2].suspected_footer);
+    assert!(pagina_dos.elements[2].suspected_footer);
+
+    assert!(!pagina_uno.elements[1].suspected_header);
+    assert!(!pagina_uno.elements[1].suspected_footer);
+    assert!(!pagina_dos.elements[1].suspected_header);
+    assert!(!pagina_dos.elements[1].suspected_footer);
 }
 
 #[test]

@@ -98,6 +98,7 @@ impl DocumentBlueprintBuilderPort for HighFidelityBlueprintBuilder {
         for pagina in &document.pages {
             paginas.push(self.construir_pagina(pagina)?);
         }
+        marcar_hints_encabezado_pie(&mut paginas);
 
         Ok(DocumentBlueprint {
             document_id: document.id.clone(),
@@ -203,6 +204,8 @@ fn construir_elemento(
         text: bloque.content.clone(),
         ocr_confidence: Some(bloque.confidence as f32),
         layout_confidence: bloque.layout_confidence.map(|valor| valor as f32),
+        suspected_header: false,
+        suspected_footer: false,
         table: bloque.table_structure.clone(),
         image_crop: construir_referencia_imagen(pagina.number, bloque, rol),
         style: inferir_estilo(
@@ -444,4 +447,171 @@ fn mapear_rol(tipo: BlockType) -> ElementRole {
         BlockType::Separator => ElementRole::Separator,
         BlockType::Unknown => ElementRole::Unknown,
     }
+}
+
+fn marcar_hints_encabezado_pie(paginas: &mut [PageBlueprint]) {
+    if paginas.len() < 2 {
+        return;
+    }
+
+    for indice_pagina in 0..paginas.len() {
+        let (paginas_previas, pagina_actual_y_resto) = paginas.split_at_mut(indice_pagina);
+        let Some((pagina_actual, paginas_siguientes)) = pagina_actual_y_resto.split_first_mut()
+        else {
+            continue;
+        };
+
+        let pagina_previa = paginas_previas.last();
+        let pagina_siguiente = paginas_siguientes.first();
+        let altura = pagina_actual.dimensions.height.max(1);
+
+        for indice_elemento in 0..pagina_actual.elements.len() {
+            let elemento = &pagina_actual.elements[indice_elemento];
+            let es_header = es_candidato_header_footer(elemento, altura, true)
+                && (pagina_previa
+                    .is_some_and(|vecina| tiene_match_repetido(elemento, vecina, true))
+                    || pagina_siguiente
+                        .is_some_and(|vecina| tiene_match_repetido(elemento, vecina, true)));
+
+            let es_footer = es_candidato_header_footer(elemento, altura, false)
+                && (pagina_previa
+                    .is_some_and(|vecina| tiene_match_repetido(elemento, vecina, false))
+                    || pagina_siguiente
+                        .is_some_and(|vecina| tiene_match_repetido(elemento, vecina, false)));
+
+            let elemento_mut = &mut pagina_actual.elements[indice_elemento];
+            elemento_mut.suspected_header = es_header;
+            elemento_mut.suspected_footer = es_footer;
+        }
+    }
+}
+
+fn es_candidato_header_footer(
+    elemento: &ElementBlueprint,
+    altura_pagina: u32,
+    es_header: bool,
+) -> bool {
+    if !matches!(
+        elemento.role,
+        ElementRole::Title
+            | ElementRole::Paragraph
+            | ElementRole::ListItem
+            | ElementRole::Separator
+    ) {
+        return false;
+    }
+
+    let texto_normalizado = normalizar_texto_repetido(&elemento.text);
+    if texto_normalizado.is_empty() {
+        return false;
+    }
+
+    let top = elemento.bounding_box.y;
+    let bottom = elemento
+        .bounding_box
+        .y
+        .saturating_add(elemento.bounding_box.height);
+
+    if es_header {
+        top <= altura_pagina.saturating_mul(14) / 100
+    } else {
+        bottom >= altura_pagina.saturating_mul(88) / 100
+    }
+}
+
+fn tiene_match_repetido(
+    candidato: &ElementBlueprint,
+    vecina: &PageBlueprint,
+    es_header: bool,
+) -> bool {
+    let altura_vecina = vecina.dimensions.height.max(1);
+    vecina.elements.iter().any(|otro| {
+        es_candidato_header_footer(otro, altura_vecina, es_header)
+            && mismo_patron_repetido(candidato, otro, vecina.dimensions.width.max(1))
+    })
+}
+
+fn mismo_patron_repetido(
+    left: &ElementBlueprint,
+    right: &ElementBlueprint,
+    ancho_pagina: u32,
+) -> bool {
+    if left.role != right.role
+        || left.column_index != right.column_index
+        || left.total_columns != right.total_columns
+    {
+        return false;
+    }
+
+    let tolerancia_x = ancho_pagina.saturating_mul(5) / 100;
+    let tolerancia_w = ancho_pagina.saturating_mul(8) / 100;
+    let tolerancia_y = 36;
+
+    if left.bounding_box.x.abs_diff(right.bounding_box.x) > tolerancia_x
+        || left.bounding_box.width.abs_diff(right.bounding_box.width) > tolerancia_w
+        || left.bounding_box.y.abs_diff(right.bounding_box.y) > tolerancia_y
+    {
+        return false;
+    }
+
+    let left_text = normalizar_texto_repetido(&left.text);
+    let right_text = normalizar_texto_repetido(&right.text);
+    if left_text.is_empty() || right_text.is_empty() {
+        return false;
+    }
+
+    if left_text == right_text {
+        return true;
+    }
+
+    similitud_textual(&left_text, &right_text) >= 0.86
+}
+
+fn normalizar_texto_repetido(texto: &str) -> String {
+    let mut normalizado = String::with_capacity(texto.len());
+    let mut previo_espacio = false;
+
+    for caracter in texto.chars().flat_map(char::to_lowercase) {
+        let emitido = if caracter.is_ascii_digit() {
+            Some('#')
+        } else if caracter.is_alphanumeric() {
+            Some(caracter)
+        } else if caracter.is_whitespace() || matches!(caracter, '-' | '–' | '—' | '_' | '/' | ':')
+        {
+            Some(' ')
+        } else {
+            None
+        };
+
+        match emitido {
+            Some(' ') if !previo_espacio => {
+                normalizado.push(' ');
+                previo_espacio = true;
+            }
+            Some(' ') => {}
+            Some(valor) => {
+                normalizado.push(valor);
+                previo_espacio = false;
+            }
+            None => {}
+        }
+    }
+
+    normalizado.trim().to_string()
+}
+
+fn similitud_textual(left: &str, right: &str) -> f32 {
+    let left_tokens: Vec<&str> = left.split_whitespace().collect();
+    let right_tokens: Vec<&str> = right.split_whitespace().collect();
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let matches = left_tokens
+        .iter()
+        .filter(|token| right_tokens.contains(token))
+        .count();
+
+    let max_tokens = left_tokens.len().max(right_tokens.len()) as f32;
+    matches as f32 / max_tokens
 }

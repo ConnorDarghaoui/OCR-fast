@@ -46,6 +46,10 @@ pub struct ElementBlueprint {
     pub ocr_confidence: Option<f32>,
     /// Confianza del detector de layout, si la etapa estuvo presente.
     pub layout_confidence: Option<f32>,
+    /// Marca conservadora para posibles encabezados repetidos entre páginas.
+    pub suspected_header: bool,
+    /// Marca conservadora para posibles pies repetidos entre páginas.
+    pub suspected_footer: bool,
     /// Estructura tabular cuando el elemento representa una tabla.
     pub table: Option<TableStructure>,
     /// Referencia de recorte para imágenes preservadas del original.
