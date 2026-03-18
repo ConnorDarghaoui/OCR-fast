@@ -1,170 +1,210 @@
-# OCRfast
+# OCRFast
 
-Sistema OCR (Reconocimiento Óptico de Caracteres) local-first implementado en Rust con interfaz TUI.
+OCR local-first en Rust con interfaz TUI, pipeline modular y exportación a
+Markdown, PDF sandwich y JSON.
 
-## Características
+## Qué hace hoy
 
-- **Terminal User Interface (TUI)**: Interfaz interactiva moderna y minimalista
-  - Diseño adaptativo que respeta el tema de tu terminal
-  - Soporte de mouse (scroll para navegar)
-  - Badges ASCII puros (sin emojis): `[+]` `[-]` `[*]` `[ ]`
-  - Rendimiento optimizado (>60 FPS)
-- **Procesamiento local**: Total independencia de conexiones a Internet
-- **Clean Architecture**: Arquitectura limpia que separa dominio, aplicación e infraestructura
-- **Soporte de formatos**: PDF, PNG, JPEG y otros formatos de imagen
-- **Motores OCR flexibles**: Compatible con Tesseract y motores ONNX
-- **Perfiles de procesamiento**: Modos rápido, preciso y balanceado
-- **Exportación múltiple**: Soporte para Markdown, PDF Sandwich y JSON
+- Procesa PDF e imágenes raster (`png`, `jpg`, `jpeg`, `tiff`, `tif`, `bmp`, `webp`).
+- Arranca la TUI de inmediato con un motor stub y carga ONNX en background.
+- Descarga modelos ONNX automáticamente cuando no existen en la máquina.
+- Usa `pdfium` para rasterizar PDF sin depender de una instalación manual.
+- Persiste trabajos en disco para recuperar estado entre sesiones.
+- Expone un pipeline desacoplado por puertos para parser, layout, OCR,
+  preprocesamiento, postprocesamiento, exportación y storage.
 
-## Instalación
+## Modelo de ejecución real
 
-### Requisitos
-- Rust 1.70 o superior
-- Sistema operativo: Linux, Windows o macOS
+El comportamiento actual no es “100% offline desde cero”.
 
-### Compilar desde código fuente
+- `cargo build` puede descargar dependencias nativas, incluido `pdfium`.
+- `ort` usa `download-binaries`, así que la primera compilación también puede
+  bajar binarios de ONNX Runtime.
+- El primer arranque con motor real puede descargar modelos a la ruta local de
+  datos del usuario.
+- Si ejecutas con `--stub`, la aplicación no intenta cargar ONNX.
 
-Este flujo puede descargar dependencias nativas y modelos si no existen localmente.
+La aplicación sigue siendo local-first en el sentido operativo: una vez que los
+artefactos están presentes, el procesamiento ocurre en la máquina del usuario.
+
+## Rutas locales
+
+OCRFast usa `dirs::data_local_dir()/ocrfast/` como base de runtime:
+
+- `jobs.json`: snapshots persistidos de trabajos.
+- `models/`: artefactos ONNX descargados.
+- `ocrfast.log`: log estructurado de la aplicación.
+
+En Linux normalmente eso resuelve a `~/.local/share/ocrfast/`.
+
+## Requisitos
+
+- Rust estable reciente.
+- Linux, macOS o Windows.
+- Conectividad de red solo para la primera descarga de dependencias/modelos si
+  aún no existen localmente.
+
+## Inicio rápido
 
 ```bash
-# Clonar el repositorio
-git clone <repo-url>
-cd ocrfast
-
-# Compilar en modo release
+git clone https://github.com/ConnorDarghaoui/OCR-fast.git
+cd OCR-fast
 cargo build --release
-
-# El binario estará en target/release/ocrfast
+cargo run --release
 ```
 
-## Uso
-
-### Ejecutar la aplicación
+Modo stub explícito:
 
 ```bash
-# Desde el directorio del proyecto
-cargo run
+cargo run --release -- --stub
+```
 
-# O ejecutar el binario directamente
+Binario compilado:
+
+```bash
 ./target/release/ocrfast
 ```
 
-Los modelos ONNX se descargan automáticamente si no existen localmente.
+## Controles de la TUI
 
-### Controles de la interfaz TUI
+### Vista de trabajos
 
-#### Vista principal (Lista de trabajos)
-- **`n`**: Agregar nuevo archivo para procesar
-- **`↑`/`↓`** o **`j`/`k`**: Navegar entre trabajos
-- **Mouse scroll**: Navegar con rueda del mouse (arriba/abajo)
-- **`Enter`**: Ver detalles del trabajo seleccionado
-- **`s`**: Abrir configuración
-- **`q`**: Salir de la aplicación
+- `n`: agregar archivo.
+- `j` / `k` o flechas: navegar.
+- `Enter`: abrir detalle.
+- `s`: abrir ajustes.
+- `x`: eliminar trabajo seleccionado.
+- `c`: limpiar trabajos finalizados.
+- `z`: solicitar cancelación del trabajo en curso.
+- `?`: abrir ayuda.
+- `q`: salir.
 
-#### Vista de detalles
-- **`q`** o **`Esc`**: Volver a la lista de trabajos
+### Vista de detalle
 
-#### Configuración
-- **`1`**: Perfil Fast (rápido)
-- **`2`**: Perfil Balanced (balanceado)
-- **`3`**: Perfil Accurate (preciso)
-- **`q`** o **`Esc`**: Volver a la lista
+- `j` / `k` o flechas: scroll.
+- `e`: exportar a Markdown.
+- `E`: exportar a JSON.
+- `p`: exportar a PDF sandwich.
+- `z`: cancelar si el trabajo sigue corriendo.
+- `Esc` o `q`: volver a la lista.
 
-#### Modo de edición (al agregar archivo)
-- **Escribir**: Ingresar ruta del archivo
-- **`Enter`**: Procesar el archivo
-- **`Esc`**: Cancelar
-- **`Backspace`**: Borrar caracteres
+### Ajustes
+
+- `1`: perfil `Fast`.
+- `2`: perfil `Balanced`.
+- `3`: perfil `Accurate`.
+- `4`: idioma primario `spa`.
+- `5`: idioma primario `eng`.
+- `Esc` o `q`: volver.
+
+### Entrada de ruta
+
+- Escribir: ruta del archivo.
+- `Enter`: confirmar.
+- `Backspace`: borrar.
+- `Esc`: cancelar.
+
+## Formatos soportados
+
+### Entrada
+
+- PDF
+- PNG
+- JPEG
+- TIFF
+- BMP
+- WebP
+
+### Salida
+
+- Markdown
+- PDF sandwich con texto invisible seleccionable
+- JSON estructurado
+
+## GPU y features
+
+La base funciona en CPU. Si quieres compilar con soporte de aceleración
+específico, usa las features expuestas por `ort`:
+
+```bash
+cargo build --release --features cuda
+```
+
+Features disponibles:
+
+- `cuda`
+- `tensorrt`
+- `rocm`
+- `coreml`
+
+La aplicación degrada a CPU si el backend solicitado no queda operativo.
 
 ## Arquitectura
 
-El sistema sigue principios de Clean Architecture con las siguientes capas:
-
-```
+```text
 src/
-├── domain/           # Entidades y reglas de negocio fundamentales
-├── application/      # Casos de uso y coordinación de la lógica
-│   ├── tui/          # Terminal User Interface
-│   │   ├── mod.rs          # Inicialización y cleanup
-│   │   ├── app_state.rs    # Estado reactivo de la aplicación
-│   │   ├── events.rs       # Event loop y manejo de teclado
-│   │   └── ui.rs           # Renderizado de widgets
-│   └── use_cases/    # Implementación de casos de uso
-├── interfaces/       # Definición de puertos (abstracciones)
-└── infrastructure/   # Implementaciones concretas de servicios externos
-    ├── ocr_engines/  # Motores OCR (Tesseract, ONNX, stubs)
-    ├── document_parsers/ # Parseadores de documentos
-    ├── job_store/    # Almacenamiento de trabajos
-    └── exporters/    # Exportadores de resultados
+├── domain/
+│   ├── mod.rs
+│   └── errors.rs
+├── interfaces/
+│   ├── mod.rs
+│   └── ports.rs
+├── application/
+│   ├── pipeline/mod.rs
+│   └── tui/
+│       ├── mod.rs
+│       ├── app_state.rs
+│       ├── events.rs
+│       └── ui.rs
+├── infrastructure/
+│   ├── document_parsers/
+│   ├── exporters/
+│   ├── job_store/
+│   ├── layout_engines/
+│   ├── ocr_engines/
+│   ├── postprocessors/
+│   └── preprocessors/
+├── lib.rs
+└── main.rs
 ```
 
-## Desarrollo
+### Responsabilidad por capa
 
-### Ejecutar tests
+- `domain`: entidades, enums y errores del sistema.
+- `interfaces`: puertos que definen contratos estables.
+- `application`: orquestación del pipeline y estado de la TUI.
+- `infrastructure`: adaptadores concretos para parsing, layout, OCR,
+  persistencia y exportación.
+
+## Pruebas
+
+La carpeta [`tests/`](/home/lucas/Documents/proyectos/utp/ocrfast/tests) ya
+quedó limpia de comentarios narrativos y tiene una guía breve en
+[tests/README.md](/home/lucas/Documents/proyectos/utp/ocrfast/tests/README.md).
+
+Comandos útiles:
 
 ```bash
 cargo test
 ```
 
-### Compilar en modo debug
+```bash
+cargo test --test onnx_integration_tests -- --ignored
+```
 
 ```bash
-cargo build
+cargo test --features ci_real_docs --test real_document_tests -- --ignored
 ```
 
-### Logs
+## Limitaciones actuales
 
-La aplicación usa `env_logger`. Para ver logs detallados:
-
-```bash
-RUST_LOG=debug cargo run
-```
-
-## Stubs vs Implementaciones reales
-
-Actualmente, el proyecto usa **stubs** (implementaciones simuladas) para desarrollo y testing rápido:
-
-- `StubDocumentParser`: Simula parseo de documentos sin I/O real
-- `StubOcrEngine`: Genera texto de ejemplo con confianza variable
-
-### Migrar a implementaciones reales
-
-Para producción, reemplaza los stubs en `src/main.rs`:
-
-```rust
-// En lugar de:
-let parser = Arc::new(StubDocumentParser::new());
-let ocr_engine = Arc::new(StubOcrEngine::new());
-
-// Usa:
-let parser = Arc::new(DocumentParser::new());
-let ocr_engine = Arc::new(TesseractEngine::new());
-```
-
-## Roadmap
-
-- [ ] Integración con Tesseract real (tesseract-rs)
-- [ ] Integración con ONNX Runtime
-- [ ] Persistencia de jobs en disco
-- [ ] Exportación a Markdown/PDF
-- [ ] Layout engines (XY-Cut, ONNX-based)
-- [ ] Preprocesamiento de imágenes
-- [ ] Tests E2E
-
-## Tecnologías
-
-- **Rust**: Lenguaje de programación
-- **ratatui**: Framework TUI para rendering de widgets
-- **crossterm**: Biblioteca cross-platform para control de terminal
-- **uuid**: Generación de identificadores únicos
-- **serde**: Serialización/deserialización
-- **chrono**: Manejo de fechas y tiempos
-- **log + env_logger**: Sistema de logging
+- El arranque inicial con OCR real depende de que puedan descargarse modelos.
+- La TUI comienza con stub y luego reemplaza el backend por ONNX cuando termina
+  de cargar.
+- Los comentarios y rustdoc del código ya están mucho más consistentes, pero la
+  documentación de API no pretende ser tutorial de uso; está orientada a diseño,
+  trade-offs y mantenimiento.
 
 ## Licencia
 
 MIT
-
-## Contribuir
-
-Las contribuciones son bienvenidas. Por favor, abre un issue primero para discutir cambios mayores.
