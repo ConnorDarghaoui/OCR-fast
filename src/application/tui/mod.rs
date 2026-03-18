@@ -5,6 +5,8 @@ pub mod events;
 /// Render puro de widgets y composición visual.
 pub mod ui;
 
+use crate::infrastructure::exporters::DefaultJobExporter;
+use crate::infrastructure::layout_engines::DefaultLayoutEngineFactory;
 use crate::interfaces::ports::{DocumentParserPort, JobStorePort, OcrEnginePort};
 use app_state::{AppState, ViewMode};
 use crossterm::{
@@ -64,7 +66,13 @@ pub fn run(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = AppState::nuevo(parser, ocr_engine, job_store);
+    let mut app = AppState::nuevo(
+        parser,
+        ocr_engine,
+        job_store,
+        Arc::new(DefaultLayoutEngineFactory::new()),
+        Arc::new(DefaultJobExporter::new()),
+    );
 
     if cargar_onnx {
         app.iniciar_carga_motor();

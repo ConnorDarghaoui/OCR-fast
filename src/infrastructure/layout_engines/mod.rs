@@ -1,6 +1,36 @@
 use crate::domain::errors::LayoutError;
 use crate::domain::{Block, BlockType, Page, Rectangle};
-use crate::interfaces::ports::LayoutEnginePort;
+use crate::interfaces::ports::{LayoutEngineFactoryPort, LayoutEnginePort, OcrEnginePort};
+use std::sync::Arc;
+
+/// Fábrica por defecto para resolver fallback de layout en tiempo de ejecución.
+///
+/// Si el OCR ya incorpora layout, no se añade una fase extra. En caso contrario,
+/// se devuelve XY-Cut como motor heurístico de bajo coste y cero dependencias.
+pub struct DefaultLayoutEngineFactory;
+
+impl DefaultLayoutEngineFactory {
+    /// Construye una fábrica sin estado mutable.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DefaultLayoutEngineFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LayoutEngineFactoryPort for DefaultLayoutEngineFactory {
+    fn create_for(&self, ocr_engine: &dyn OcrEnginePort) -> Option<Arc<dyn LayoutEnginePort>> {
+        if ocr_engine.provides_layout() {
+            None
+        } else {
+            Some(Arc::new(XyCutLayoutEngine::new()))
+        }
+    }
+}
 
 /// Segmentador de layout heurístico basado en XY-Cut.
 ///

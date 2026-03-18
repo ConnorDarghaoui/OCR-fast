@@ -1,9 +1,10 @@
 use crate::application::pipeline::{OcrPipeline, PipelineEvent, MSG_JOB_CANCELADO};
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
-use crate::infrastructure::exporters::{JsonExporter, MarkdownExporter, PdfSandwichExporter};
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
 use crate::infrastructure::postprocessors::TextPostprocessor;
-use crate::interfaces::ports::{DocumentParserPort, ExporterPort, JobStorePort, OcrEnginePort};
+use crate::interfaces::ports::{
+    DocumentParserPort, JobExporterPort, JobStorePort, LayoutEngineFactoryPort, OcrEnginePort,
+};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
@@ -92,6 +93,8 @@ pub struct AppState {
     pub analizador_documentos: Arc<dyn DocumentParserPort>,
     pub motor_ocr: Arc<dyn OcrEnginePort>,
     job_store: Arc<dyn JobStorePort>,
+    layout_factory: Arc<dyn LayoutEngineFactoryPort>,
+    job_exporter: Arc<dyn JobExporterPort>,
     /// `false` mientras el motor ONNX no haya llegado; bloquea la creacion de jobs.
     pub motor_cargado: bool,
     /// `true` si ONNX fallo y el stub quedo activo. La TUI muestra banner de advertencia.
@@ -145,6 +148,8 @@ impl AppState {
         analizador_documentos: Arc<dyn DocumentParserPort>,
         motor_ocr: Arc<dyn OcrEnginePort>,
         job_store: Arc<dyn JobStorePort>,
+        layout_factory: Arc<dyn LayoutEngineFactoryPort>,
+        job_exporter: Arc<dyn JobExporterPort>,
     ) -> Self {
         let (trabajos, log_arranque) = cargar_trabajos_iniciales(&*job_store);
 
@@ -160,6 +165,8 @@ impl AppState {
             analizador_documentos,
             motor_ocr,
             job_store,
+            layout_factory,
+            job_exporter,
             motor_cargado: false,
             motor_fallido: false,
             receptores_activos: HashMap::new(),
@@ -395,6 +402,7 @@ impl AppState {
 
         let analizador = Arc::clone(&self.analizador_documentos);
         let motor = Arc::clone(&self.motor_ocr);
+        let layout_factory = Arc::clone(&self.layout_factory);
         let perfil = self.trabajos[indice].profile;
         let ruta = self.trabajos[indice].document.source_path.clone();
         let idioma = self.idioma.clone();
@@ -404,10 +412,9 @@ impl AppState {
             let mut pipeline = OcrPipeline::new(analizador, Arc::clone(&motor))
                 .with_postprocessor(Arc::new(postprocesador));
 
-            if !motor.provides_layout() {
-                use crate::infrastructure::layout_engines::XyCutLayoutEngine;
-                log::info!("Usando XyCutLayoutEngine como motor de layout");
-                pipeline = pipeline.with_layout_engine(Arc::new(XyCutLayoutEngine::new()));
+            if let Some(layout_engine) = layout_factory.create_for(motor.as_ref()) {
+                log::info!("Usando {} como motor de layout", layout_engine.name());
+                pipeline = pipeline.with_layout_engine(layout_engine);
             }
 
             match pipeline.procesar_documento(&ruta, &perfil, Some(&tx), Some(&cancel_flag)) {
@@ -632,8 +639,10 @@ impl AppState {
                                 .document
                                 .source_path
                                 .with_extension(trabajo.formato_salida.extension());
-                            let resultado =
-                                exportar_segun_formato(trabajo, &ruta).map_err(|e| e.to_string());
+                            let resultado = self
+                                .job_exporter
+                                .export_job(trabajo, &ruta)
+                                .map_err(|e| e.to_string());
                             ruta_export = Some(ruta);
                             export_resultado = Some(resultado);
 
@@ -788,9 +797,7 @@ impl AppState {
         };
 
         let ruta_base = trabajo.document.source_path.with_extension("md");
-        let exportador = MarkdownExporter::new();
-
-        match exportador.export(&trabajo, &ruta_base) {
+        match self.job_exporter.export_job(&trabajo, &ruta_base) {
             Ok(_) => {
                 self.loguear(format!("Exportado MD: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
@@ -810,9 +817,7 @@ impl AppState {
         };
 
         let ruta_base = trabajo.document.source_path.with_extension("json");
-        let exportador = JsonExporter::new();
-
-        match exportador.export(&trabajo, &ruta_base) {
+        match self.job_exporter.export_job(&trabajo, &ruta_base) {
             Ok(_) => {
                 self.loguear(format!("Exportado JSON: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
@@ -832,9 +837,7 @@ impl AppState {
         };
 
         let ruta_base = trabajo.document.source_path.with_extension("pdf");
-        let exportador = PdfSandwichExporter::new();
-
-        match exportador.export(&trabajo, &ruta_base) {
+        match self.job_exporter.export_job(&trabajo, &ruta_base) {
             Ok(_) => {
                 self.loguear(format!("Exportado PDF: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
@@ -925,22 +928,6 @@ impl AppState {
     /// Desplaza el detalle visible una línea hacia arriba con saturación en cero.
     pub fn scroll_detalle_arriba(&mut self) {
         self.scroll_detalle = self.scroll_detalle.saturating_sub(1);
-    }
-}
-
-/// Exporta un job al formato solicitado en la ruta indicada.
-fn exportar_segun_formato(
-    job: &Job,
-    ruta: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match job.formato_salida {
-        OutputFormat::Markdown => MarkdownExporter::new()
-            .export(job, ruta)
-            .map_err(|e| e.into()),
-        OutputFormat::Pdf => PdfSandwichExporter::new()
-            .export(job, ruta)
-            .map_err(|e| e.into()),
-        OutputFormat::Json => JsonExporter::new().export(job, ruta).map_err(|e| e.into()),
     }
 }
 
