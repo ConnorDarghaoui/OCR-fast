@@ -410,6 +410,10 @@ mod exporter_tests {
     use ocrfast::infrastructure::exporters::{
         DocxExporter, JsonExporter, LatexExporter, PdfReconstructedExporter, TxtExporter,
     };
+    #[cfg(feature = "latex_compiler_validation")]
+    use ocrfast::infrastructure::exporters::{
+        LatexCompilerValidator, OCRFAST_RUN_TECTONIC_TESTS_ENV,
+    };
     use ocrfast::interfaces::ports::ExporterPort;
     use std::collections::HashMap;
 
@@ -420,6 +424,24 @@ mod exporter_tests {
             .write_to(&mut buffer, image::ImageFormat::Png)
             .unwrap();
         buffer.into_inner()
+    }
+
+    #[cfg(feature = "latex_compiler_validation")]
+    fn validador_latex_para_tests() -> Option<LatexCompilerValidator> {
+        if !LatexCompilerValidator::tests_enabled() {
+            eprintln!(
+                "saltando validacion tectonic: exporta {}=1 para activar la compilacion real",
+                OCRFAST_RUN_TECTONIC_TESTS_ENV
+            );
+            return None;
+        }
+
+        let Some(validador) = LatexCompilerValidator::discover() else {
+            eprintln!("saltando validacion tectonic: no se encontro binario tectonic");
+            return None;
+        };
+
+        Some(validador)
     }
 
     fn job_con_tabla(con_estructura: bool) -> Job {
@@ -1324,6 +1346,54 @@ mod exporter_tests {
         assert!(
             cantidad_png >= 2,
             "La ruta facsimil debe persistir assets para figura y fallback raster"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "latex_compiler_validation")]
+    #[test]
+    fn test_latex_exporter_semantico_compila_con_tectonic() {
+        let Some(validador) = validador_latex_para_tests() else {
+            return;
+        };
+
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_compile_sem");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        LatexExporter::new()
+            .export(&job_latex_semantico(), &ruta)
+            .unwrap();
+        let artefactos = validador.compile_tex_file(&ruta).unwrap();
+
+        assert!(
+            artefactos.pdf_path.exists(),
+            "La compilacion tectonic debe producir un PDF semantico"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "latex_compiler_validation")]
+    #[test]
+    fn test_latex_exporter_facsimil_compila_con_tectonic() {
+        let Some(validador) = validador_latex_para_tests() else {
+            return;
+        };
+
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_compile_fac");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        LatexExporter::new_facsimile()
+            .export(&job_latex_facsimil(), &ruta)
+            .unwrap();
+        let artefactos = validador.compile_tex_file(&ruta).unwrap();
+
+        assert!(
+            artefactos.pdf_path.exists(),
+            "La compilacion tectonic debe producir un PDF facsimil"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

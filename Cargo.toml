@@ -69,6 +69,8 @@ rocm    = ["ort/rocm"]
 # Habilitar tests de integracion con documentos reales (requiere modelos ONNX descargados).
 # Ejecutar con: cargo test --features ci_real_docs --test real_document_tests -- --ignored
 ci_real_docs = []
+# Habilita el puente opcional a compilacion real de LaTeX via binario externo.
+latex_compiler_validation = []
 
 [build-dependencies]
 reqwest = { version = "0.12", features = ["blocking"] }

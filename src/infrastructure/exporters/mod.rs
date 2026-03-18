@@ -1,4 +1,6 @@
 mod latex_ast;
+#[cfg(feature = "latex_compiler_validation")]
+mod latex_validation;
 
 use crate::domain::errors::ExportError;
 use crate::domain::{
@@ -20,6 +22,11 @@ use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 /// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
+#[cfg(feature = "latex_compiler_validation")]
+pub use latex_validation::{
+    LatexCompilationArtifacts, LatexCompilerError, LatexCompilerValidator,
+    OCRFAST_RUN_TECTONIC_TESTS_ENV, OCRFAST_TECTONIC_BIN_ENV,
+};
 
 /// DPI asumido para convertir geometría raster a tamaños tipográficos.
 const DPI_REFERENCIA: f64 = 150.0;
