@@ -42,6 +42,8 @@ const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
 const EMUS_POR_PUNTO: u64 = 12_700;
 /// Calidad JPEG para recortes embebidos en PDF reconstruido.
 const PDF_IMAGE_JPEG_QUALITY: u8 = 82;
+/// Umbral conservador para degradar bloques OCR débiles a imagen en DOCX.
+const DOCX_FALLBACK_OCR_CONFIDENCE_THRESHOLD: f32 = 0.74;
 /// Umbral conservador para degradar bloques OCR débiles a imagen en PDF.
 const PDF_FALLBACK_OCR_CONFIDENCE_THRESHOLD: f32 = 0.74;
 /// Umbral conservador para preservar recortes raster en LaTeX facsímil.
@@ -1369,49 +1371,47 @@ fn construir_imagen_latex_desde_bbox(
 
 fn docx_xml_elemento(
     job: &Job,
-    _pagina: &crate::domain::PageBlueprint,
+    pagina: &crate::domain::PageBlueprint,
     elemento: &ElementBlueprint,
     relaciones_imagen: &mut Vec<(String, String)>,
     media: &mut Vec<(String, Vec<u8>)>,
     contador_rel: &mut usize,
     contador_docpr: &mut u32,
 ) -> Result<String, ExportError> {
+    if debe_preservarse_como_imagen_en_docx(elemento) {
+        if let Some(xml) = docx_xml_imagen_desde_bbox(
+            job,
+            pagina.number,
+            &elemento.bounding_box,
+            elemento.style.alignment,
+            relaciones_imagen,
+            media,
+            contador_rel,
+            contador_docpr,
+        )? {
+            return Ok(xml);
+        }
+    }
+
     match elemento.role {
         ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
             if let Some(ref imagen) = elemento.image_crop {
-                match recortar_imagen_desde_referencia(
+                if let Some(xml) = docx_xml_imagen_desde_bbox(
                     job,
                     imagen.page_number,
                     &imagen.bounding_box,
-                ) {
-                    Ok(bytes) => {
-                        let rel_id = format!("rId{}", *contador_rel);
-                        let nombre = format!("image{}.png", *contador_rel);
-                        relaciones_imagen.push((rel_id.clone(), nombre.clone()));
-                        media.push((nombre, bytes));
-                        *contador_rel += 1;
-                        let width_emu = (px_a_pt(elemento.bounding_box.width)
-                            * EMUS_POR_PUNTO as f64)
-                            .round()
-                            .max(1.0) as u64;
-                        let height_emu = (px_a_pt(elemento.bounding_box.height)
-                            * EMUS_POR_PUNTO as f64)
-                            .round()
-                            .max(1.0) as u64;
-                        let xml = docx_xml_imagen(
-                            &rel_id,
-                            width_emu,
-                            height_emu,
-                            *contador_docpr,
-                            elemento.style.alignment,
-                        );
-                        *contador_docpr += 1;
-                        Ok(xml)
-                    }
-                    Err(_) => Ok(docx_xml_parrafo(
+                    elemento.style.alignment,
+                    relaciones_imagen,
+                    media,
+                    contador_rel,
+                    contador_docpr,
+                )? {
+                    Ok(xml)
+                } else {
+                    Ok(docx_xml_parrafo(
                         "Imagen omitida: raster no disponible en memoria",
                         &elemento.style,
-                    )),
+                    ))
                 }
             } else {
                 Ok(String::new())
@@ -1426,6 +1426,20 @@ fn docx_xml_elemento(
         }
         _ => Ok(docx_xml_parrafo(&elemento.text, &elemento.style)),
     }
+}
+
+fn debe_preservarse_como_imagen_en_docx(elemento: &ElementBlueprint) -> bool {
+    matches!(
+        elemento.role,
+        ElementRole::Title
+            | ElementRole::Paragraph
+            | ElementRole::Table
+            | ElementRole::Formula
+            | ElementRole::ListItem
+            | ElementRole::Unknown
+    ) && elemento
+        .ocr_confidence
+        .is_some_and(|valor| valor < DOCX_FALLBACK_OCR_CONFIDENCE_THRESHOLD)
 }
 
 fn docx_xml_pagina(
@@ -1711,6 +1725,58 @@ fn docx_xml_imagen(
         width_emu,
         height_emu
     )
+}
+
+fn docx_xml_imagen_desde_bbox(
+    job: &Job,
+    numero_pagina: u32,
+    bounding_box: &Rectangle,
+    alineacion: AlignmentHint,
+    relaciones_imagen: &mut Vec<(String, String)>,
+    media: &mut Vec<(String, Vec<u8>)>,
+    contador_rel: &mut usize,
+    contador_docpr: &mut u32,
+) -> Result<Option<String>, ExportError> {
+    let bytes = match recortar_imagen_desde_referencia(job, numero_pagina, bounding_box) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+
+    Ok(Some(docx_xml_imagen_desde_bytes(
+        bytes,
+        bounding_box,
+        alineacion,
+        relaciones_imagen,
+        media,
+        contador_rel,
+        contador_docpr,
+    )))
+}
+
+fn docx_xml_imagen_desde_bytes(
+    bytes: Vec<u8>,
+    bounding_box: &Rectangle,
+    alineacion: AlignmentHint,
+    relaciones_imagen: &mut Vec<(String, String)>,
+    media: &mut Vec<(String, Vec<u8>)>,
+    contador_rel: &mut usize,
+    contador_docpr: &mut u32,
+) -> String {
+    let rel_id = format!("rId{}", *contador_rel);
+    let nombre = format!("image{}.png", *contador_rel);
+    relaciones_imagen.push((rel_id.clone(), nombre.clone()));
+    media.push((nombre, bytes));
+    *contador_rel += 1;
+
+    let width_emu = (px_a_pt(bounding_box.width) * EMUS_POR_PUNTO as f64)
+        .round()
+        .max(1.0) as u64;
+    let height_emu = (px_a_pt(bounding_box.height) * EMUS_POR_PUNTO as f64)
+        .round()
+        .max(1.0) as u64;
+    let xml = docx_xml_imagen(&rel_id, width_emu, height_emu, *contador_docpr, alineacion);
+    *contador_docpr += 1;
+    xml
 }
 
 fn construir_document_rels(relaciones_imagen: &[(String, String)]) -> String {

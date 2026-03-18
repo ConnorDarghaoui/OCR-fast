@@ -1256,6 +1256,40 @@ mod exporter_tests {
     }
 
     #[test]
+    fn test_docx_exporter_preserva_raster_en_bloque_de_baja_confianza() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_docx_fallback");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.docx");
+
+        let exporter = DocxExporter::new();
+        exporter
+            .export(&job_pdf_fallback_confianza(), &ruta)
+            .unwrap();
+
+        let contenido = std::fs::read(&ruta).unwrap();
+        assert!(
+            contenido
+                .windows("word/media/image1.png".len())
+                .any(|w| w == b"word/media/image1.png"),
+            "El DOCX debe degradar a imagen los bloques de baja confianza"
+        );
+        assert!(
+            !contenido
+                .windows("texto dudoso".len())
+                .any(|w| w == "texto dudoso".as_bytes()),
+            "El texto dudoso no debe quedar serializado como texto editable"
+        );
+        assert!(
+            contenido
+                .windows("texto claro".len())
+                .any(|w| w == "texto claro".as_bytes()),
+            "El texto confiable debe seguir exportandose como contenido editable"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_latex_exporter_semantico_genera_fuente_y_assets() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_tex");
         std::fs::create_dir_all(&dir).unwrap();
