@@ -1,4 +1,4 @@
-use crate::application::pipeline::{OcrPipeline, PipelineEvent, MSG_JOB_CANCELADO};
+use crate::application::pipeline::{OcrPipeline, PipelineEvent, PipelineFailure};
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
 use crate::infrastructure::exporters::{JsonExporter, MarkdownExporter, PdfSandwichExporter};
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
@@ -414,8 +414,8 @@ impl AppState {
                 Ok(documento) => {
                     let _ = tx.send(PipelineEvent::Completado(documento));
                 }
-                Err(e) => {
-                    let _ = tx.send(PipelineEvent::Error(e.to_string()));
+                Err(error) => {
+                    let _ = tx.send(PipelineEvent::Error(error));
                 }
             }
         });
@@ -666,18 +666,19 @@ impl AppState {
                         self.mostrar_estado(format!("Trabajo {} completado", &id_trabajo[..8]));
                         trabajos_terminados.push(id_trabajo.clone());
                     }
-                    PipelineEvent::Error(mensaje) => {
-                        let es_cancelacion = mensaje == MSG_JOB_CANCELADO;
-
+                    PipelineEvent::Error(error) => {
                         if let Some(trabajo) =
                             self.trabajos.iter_mut().find(|j| &j.id == id_trabajo)
                         {
-                            if es_cancelacion {
-                                trabajo.status = JobStatus::Cancelled;
-                                trabajo.error_message = None;
-                            } else {
-                                trabajo.status = JobStatus::Failed;
-                                trabajo.error_message = Some(mensaje.clone());
+                            match &error {
+                                PipelineFailure::Cancelado => {
+                                    trabajo.status = JobStatus::Cancelled;
+                                    trabajo.error_message = None;
+                                }
+                                PipelineFailure::Fase { .. } => {
+                                    trabajo.status = JobStatus::Failed;
+                                    trabajo.error_message = Some(error.to_string());
+                                }
                             }
 
                             if let Err(e) = self.job_store.update(trabajo) {
@@ -688,20 +689,26 @@ impl AppState {
                                 );
                             }
 
-                            if es_cancelacion {
-                                self.loguear(format!("Trabajo {} cancelado", &id_trabajo[..8]));
-                                self.mostrar_estado(format!("Job {} cancelado", &id_trabajo[..8]));
-                            } else {
-                                self.loguear(format!(
-                                    "Error en trabajo {}: {}",
-                                    &id_trabajo[..8],
-                                    mensaje
-                                ));
-                                self.mostrar_estado(format!(
-                                    "Error en {}: {}",
-                                    &id_trabajo[..8],
-                                    mensaje
-                                ));
+                            match &error {
+                                PipelineFailure::Cancelado => {
+                                    self.loguear(format!("Trabajo {} cancelado", &id_trabajo[..8]));
+                                    self.mostrar_estado(format!(
+                                        "Job {} cancelado",
+                                        &id_trabajo[..8]
+                                    ));
+                                }
+                                PipelineFailure::Fase { .. } => {
+                                    self.loguear(format!(
+                                        "Error en trabajo {}: {}",
+                                        &id_trabajo[..8],
+                                        error
+                                    ));
+                                    self.mostrar_estado(format!(
+                                        "Error en {}: {}",
+                                        &id_trabajo[..8],
+                                        error
+                                    ));
+                                }
                             }
                         }
                         trabajos_terminados.push(id_trabajo.clone());
