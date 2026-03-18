@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use image::{DynamicImage, RgbImage};
-    use ocrfast::infrastructure::ocr_engines::onnx::ModelDownloader;
+    use ocrfast::infrastructure::ocr_engines::onnx::{ModelDownloader, ModelRuntimeProvisioner};
 
     /// Genera una imagen sintetica 800x600 con rectangulo negro
     /// simulando un bloque de texto.
@@ -53,6 +53,19 @@ mod tests {
         } else {
             eprintln!("Modelos faltantes: {:?}", faltantes);
         }
+    }
+
+    /// Verifica que el aprovisionador reutiliza el directorio controlado por el caller.
+    #[test]
+    fn test_model_runtime_provisioner_instanciacion() {
+        let ruta = std::env::temp_dir().join(format!(
+            "ocrfast_runtime_provisioner_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let downloader = ModelDownloader::with_directory(ruta.clone()).unwrap();
+        let provisioner = ModelRuntimeProvisioner::with_downloader(downloader);
+
+        assert_eq!(provisioner.directorio_modelos(), ruta.as_path());
     }
 
     /// Test E2E: descarga modelos, inicializa engine, procesa documento.
