@@ -70,7 +70,6 @@ impl ImageDocumentParser {
     }
 
     fn procesar_imagen(&self, path: &Path) -> Result<Vec<Page>, DocumentError> {
-        // Detectar si es TIFF para usar el decoder multi-pagina
         let es_tiff = path
             .extension()
             .and_then(|e| e.to_str())
@@ -122,7 +121,6 @@ impl ImageDocumentParser {
         let mut numero_pagina: u32 = 1;
 
         loop {
-            // Obtener dimensiones de la pagina actual
             let (ancho, alto) = decoder.dimensions().map_err(|e| {
                 DocumentError::ImageError(format!(
                     "Error leyendo dimensiones TIFF p{}: {}",
@@ -130,7 +128,6 @@ impl ImageDocumentParser {
                 ))
             })?;
 
-            // Decodificar pixeles a imagen dinamica de `image`
             let imagen_dyn = match decoder.colortype().map_err(|e| {
                 DocumentError::ImageError(format!("Error leyendo color type TIFF: {}", e))
             })? {
@@ -150,7 +147,6 @@ impl ImageDocumentParser {
                             )));
                         }
                     };
-                    // Construir imagen a partir de pixeles raw
                     image::DynamicImage::ImageRgb8(
                         image::RgbImage::from_raw(ancho, alto, pixeles).ok_or_else(|| {
                             DocumentError::ImageError(format!(
@@ -160,15 +156,13 @@ impl ImageDocumentParser {
                         })?,
                     )
                 }
-                // Para formatos grises y otros, convertir via image::open fallback por pagina
                 _ => {
-                    // Fallback: abrir con la crate image (carga solo pagina 0 del TIFF)
                     if numero_pagina == 1 {
                         image::open(path).map_err(|e| {
                             DocumentError::ImageError(format!("Fallback TIFF p1: {}", e))
                         })?
                     } else {
-                        break; // Solo podemos acceder a p1 por el fallback
+                        break;
                     }
                 }
             };
@@ -185,9 +179,8 @@ impl ImageDocumentParser {
                 image_data: Some(bytes_png),
             });
 
-            // Intentar avanzar a la siguiente pagina
             if decoder.next_image().is_err() {
-                break; // No hay mas paginas
+                break;
             }
 
             numero_pagina += 1;

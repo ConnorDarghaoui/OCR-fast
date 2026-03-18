@@ -55,7 +55,6 @@ impl TextPostprocessor {
 
     /// Corrige espaciado multiple y trim.
     fn fix_spaces(&self, text: &str) -> String {
-        // Reemplazar espacios multiples por uno solo
         let mut result = String::with_capacity(text.len());
         let mut prev_space = false;
 

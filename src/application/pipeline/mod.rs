@@ -140,7 +140,6 @@ impl OcrPipeline {
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Document, Box<dyn std::error::Error + Send + Sync>> {
-        // Fase 1: Parseo
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -155,7 +154,6 @@ impl OcrPipeline {
 
         self.verificar_cancelacion(cancelacion)?;
 
-        // Fase 2: Preprocesamiento
         if let Some(ref preprocesador) = self.preprocesador {
             self.notificar(
                 notificador,
@@ -170,7 +168,6 @@ impl OcrPipeline {
 
         self.verificar_cancelacion(cancelacion)?;
 
-        // Fase 3: Layout
         if let Some(ref layout_engine) = self.layout_engine {
             self.notificar(
                 notificador,
@@ -195,10 +192,6 @@ impl OcrPipeline {
 
         self.verificar_cancelacion(cancelacion)?;
 
-        // Fase 4: OCR
-        //
-        // TODO(Fix 4): iterar por pagina con `process_page` para emitir
-        // ProgresoActualizado por cada pagina y permitir cancelacion granular.
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -211,9 +204,7 @@ impl OcrPipeline {
 
         self.verificar_cancelacion(cancelacion)?;
 
-        // Fase 5: Tablas
         if let Some(ref table_analyzer) = self.table_analyzer {
-            // Table Transformer es costoso; activarlo solo si el layout detecto tablas.
             let hay_tablas = documento
                 .pages
                 .iter()
@@ -233,7 +224,6 @@ impl OcrPipeline {
 
         self.verificar_cancelacion(cancelacion)?;
 
-        // Fase 6: Postprocesamiento
         if let Some(ref postprocesador) = self.postprocesador {
             self.notificar(
                 notificador,
@@ -261,8 +251,6 @@ impl OcrPipeline {
         &self,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Relaxed es suficiente: un solo escritor (TUI), la latencia de algunos
-        // ciclos entre escritura y deteccion es aceptable aqui.
         if cancelacion.map_or(false, |f| f.load(Ordering::Relaxed)) {
             return Err(MSG_JOB_CANCELADO.into());
         }

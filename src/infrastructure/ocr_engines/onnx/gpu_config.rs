@@ -175,14 +175,11 @@ pub fn intra_threads(backend: Backend) -> usize {
             feature = "coreml"
         ))]
         b if b.es_gpu() => 2,
-        _ => {
-            // Mitad de los nucleos logicos para no saturar el sistema
-            (std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4)
-                / 2)
-            .max(1)
-        }
+        _ => (std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            / 2)
+        .max(1),
     }
 }
 
@@ -192,9 +189,7 @@ mod tests {
 
     #[test]
     fn test_backend_detectar_cpu_por_defecto() {
-        // Sin features GPU compiladas, debe retornar Cpu
         let backend = Backend::detectar();
-        // En CI sin GPU features: debe ser Cpu
         assert_eq!(
             backend.nombre(),
             if cfg!(feature = "cuda") {
@@ -214,7 +209,6 @@ mod tests {
     #[test]
     fn test_providers_siempre_incluye_cpu() {
         let providers = providers(0);
-        // Debe haber al menos 1 provider (CPU)
         assert!(!providers.is_empty());
     }
 
@@ -228,7 +222,6 @@ mod tests {
     fn test_inicializar_retorna_estado_coherente() {
         let estado = inicializar(0);
         assert!(!estado.backend_compilado.is_empty());
-        // Sin features GPU: backend es CPU, es_gpu = false
         if !estado.es_gpu {
             assert_eq!(estado.backend_compilado, "CPU");
             assert!(estado.inicializado, "CPU debe inicializar siempre");

@@ -23,14 +23,12 @@ impl PdfiumRenderer {
     ///
     /// Falla si la biblioteca dinámica no puede localizarse o enlazarse.
     pub fn new() -> Result<Self, DocumentError> {
-        // Verificar disponibilidad inmediata al construir
         Self::obtener_bindings()?;
         Ok(Self)
     }
 
     /// Obtener bindings de Pdfium buscando la libreria en multiples ubicaciones.
     fn obtener_bindings() -> Result<Pdfium, DocumentError> {
-        // 1. Buscar junto al ejecutable
         let junto_a_exe = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -65,7 +63,6 @@ impl PdfRendererPort for PdfiumRenderer {
             .load_pdf_from_file(path, None)
             .map_err(|e| DocumentError::PdfError(format!("Error abriendo PDF: {}", e)))?;
 
-        // page_number llega 1-based, Pdfium usa 0-based
         let page_index = (page_number as u16).saturating_sub(1);
 
         if page_index >= document.pages().len() {

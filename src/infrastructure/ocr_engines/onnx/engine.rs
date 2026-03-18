@@ -39,7 +39,6 @@ impl OnnxOcrEngine {
     /// Falla si la adquisición de modelos o la carga de cualquiera de los
     /// submodelos no puede completarse de forma consistente.
     pub fn new() -> Result<Self, OcrError> {
-        // Inicializar GPU una vez; cae a CPU si no hay EP disponible
         let _estado_gpu = gpu_config::inicializar(0);
 
         let downloader =
@@ -99,14 +98,12 @@ impl OnnxOcrEngine {
         imagen: &DynamicImage,
         profile: &ProcessingProfile,
     ) -> Result<Vec<Block>, OcrError> {
-        // Determinar umbrales segun perfil
         let (umbral_conf, umbral_nms, umbral_bin, tam_min): (f32, f32, f32, u32) = match profile {
             ProcessingProfile::Fast => (0.25, 0.50, 0.35, 8),
             ProcessingProfile::Balanced => (0.30, 0.45, 0.30, 5),
             ProcessingProfile::Accurate => (0.40, 0.35, 0.25, 3),
         };
 
-        // Fast omite correccion de orientacion por velocidad
         let imagen_corregida = match profile {
             ProcessingProfile::Fast => {
                 log::debug!("Fast profile: omitiendo correccion de orientacion");
@@ -118,20 +115,17 @@ impl OnnxOcrEngine {
                 .map_err(|e| OcrError::RecognitionError(e.to_string()))?,
         };
 
-        // Layout con umbrales del perfil
         let mut bloques = self
             .layout
             .analizar_imagen_con_umbrales(&imagen_corregida, umbral_conf, umbral_nms)
             .map_err(|e| OcrError::RecognitionError(e.to_string()))?;
 
-        // Procesar cada bloque segun su tipo
         for bloque in &mut bloques {
             match bloque.block_type {
                 BlockType::Text | BlockType::Title | BlockType::List => {
                     self.procesar_bloque_texto(&imagen_corregida, bloque, umbral_bin, tam_min);
                 }
                 BlockType::Table => {
-                    // Analisis de tablas omitido en Fast
                     if *profile != ProcessingProfile::Fast {
                         self.procesar_bloque_tabla(&imagen_corregida, bloque);
                     }
@@ -162,7 +156,6 @@ impl OnnxOcrEngine {
             None => return,
         };
 
-        // Detectar lineas de texto con umbrales del perfil; si no hay regiones, el bloque completo es la unica entrada.
         let regiones = self
             .texto_det
             .detectar_con_umbrales(&recorte, umbral_bin, tam_min)
@@ -181,7 +174,6 @@ impl OnnxOcrEngine {
             return;
         }
 
-        // Una sola llamada batch para todos los recortes de este bloque.
         let resultados = match self.texto_rec.reconocer_batch(&recortes_linea) {
             Ok(r) => r,
             Err(e) => {
@@ -219,7 +211,6 @@ impl OnnxOcrEngine {
 
         match self.tablas.analizar(&recorte) {
             Ok(mut estructura) => {
-                // OCR sobre cada celda
                 for fila in &mut estructura.rows {
                     for celda in fila {
                         if let Some(celda_img) = self.recortar_region(&recorte, &celda.bounding_box)

@@ -18,25 +18,19 @@ use std::sync::Arc;
 
 /// Inicializa y ejecuta la aplicacion TUI.
 ///
-/// # Parametros
-/// - `parser`: Puerto de parseador de documentos (inyectado).
-/// - `ocr_engine`: Puerto de motor OCR (inyectado).
+/// El módulo toma dependencias por puertos para que la capa interactiva quede
+/// desacoplada de motores reales, stubs y mecanismos concretos de persistencia.
 ///
-/// # Retorna
-/// Resultado de la ejecucion o error de I/O.
-/// Registra un hook de panico que restaura el terminal antes de abortar.
+/// # Notes
 ///
-/// Sin este hook, cualquier `panic!` dentro del loop TUI deja la terminal
-/// en raw mode con la pantalla alternativa activa, inutilizando la sesion
-/// del shell del usuario.
+/// El arranque registra un hook de pánico que restaura el terminal antes de
+/// delegar al handler original. Sin esa restauración, un `panic!` dejaría la
+/// sesión en raw mode y con alternate screen activa.
 fn registrar_hook_panico() {
     let hook_original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // Restaurar terminal incondicionalmente; los errores se ignoran porque
-        // ya estamos en un camino de panico y no hay forma util de propagarlos.
         let _ = disable_raw_mode();
         let _ = crossterm::execute!(io::stderr(), LeaveAlternateScreen, DisableMouseCapture,);
-        // Delegar al handler original para que imprima el backtrace/mensaje.
         hook_original(info);
     }));
 }
@@ -62,32 +56,25 @@ pub fn run(
     job_store: Arc<dyn JobStorePort>,
     cargar_onnx: bool,
 ) -> Result<(), io::Error> {
-    // Registrar antes de habilitar raw mode para cubrir cualquier fallo posterior.
     registrar_hook_panico();
 
-    // Configurar terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Crear estado de la aplicacion
     let mut app = AppState::nuevo(parser, ocr_engine, job_store);
 
-    // Iniciar carga en background si se solicita
     if cargar_onnx {
         app.iniciar_carga_motor();
     } else {
-        // Si no cargamos ONNX, vamos directo a la lista
         app.motor_cargado = true;
         app.vista_actual = ViewMode::JobList;
     }
 
-    // Loop principal de eventos y rendering
     let res = events::ejecutar_bucle_eventos(&mut terminal, &mut app);
 
-    // Restaurar terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),

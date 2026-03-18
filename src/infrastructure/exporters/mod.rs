@@ -38,7 +38,6 @@ impl ExporterPort for MarkdownExporter {
 
         let mut content = String::new();
 
-        // Header del documento
         content.push_str(&format!("# Documento: {}\n\n", job.document.id));
         content.push_str(&format!(
             "- **Archivo fuente**: {}\n",
@@ -48,7 +47,6 @@ impl ExporterPort for MarkdownExporter {
         content.push_str(&format!("- **Estado**: {:?}\n\n", job.status));
         content.push_str("---\n\n");
 
-        // Contenido por pagina
         for page in &job.document.pages {
             content.push_str(&format!("## Pagina {}\n\n", page.number));
 
@@ -61,7 +59,6 @@ impl ExporterPort for MarkdownExporter {
                         content.push_str(&format!("{}\n\n", block.content));
                     }
                     BlockType::Table => {
-                        // Usar TableStructure.to_markdown() si esta disponible
                         if let Some(ref estructura) = block.table_structure {
                             let tabla_md = estructura.to_markdown();
                             if !tabla_md.is_empty() {
@@ -71,7 +68,6 @@ impl ExporterPort for MarkdownExporter {
                                 content.push_str(&format!("```\n[Tabla vacía]\n```\n\n"));
                             }
                         } else if !block.content.is_empty() {
-                            // Fallback: texto plano extraido del bloque
                             content.push_str(&format!("```\n{}\n```\n\n", block.content));
                         } else {
                             content.push_str("```\n[Tabla sin contenido]\n```\n\n");
@@ -164,7 +160,6 @@ impl ExporterPort for PdfSandwichExporter {
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
 
-        // Fuente Helvetica built-in (Type1, sin archivo externo)
         let font_id = doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
@@ -180,13 +175,11 @@ impl ExporterPort for PdfSandwichExporter {
             let mut operaciones_imagen: Vec<Operation> = Vec::new();
             let mut recursos_xobject = lopdf::Dictionary::new();
 
-            // --- Capa 1: Imagen de fondo ---
             if let Some(ref datos_imagen) = pagina.image_data {
                 match Self::crear_xobject_imagen(&mut doc, datos_imagen) {
                     Ok((xobj_id, img_name)) => {
                         recursos_xobject.set(img_name.clone(), xobj_id);
 
-                        // q (save state) -> cm (scale to page) -> /ImX Do -> Q (restore)
                         operaciones_imagen.push(Operation::new("q", vec![]));
                         operaciones_imagen.push(Operation::new(
                             "cm",
@@ -215,7 +208,6 @@ impl ExporterPort for PdfSandwichExporter {
                 }
             }
 
-            // --- Capa 2: Texto OCR invisible ---
             let mut operaciones_texto: Vec<Operation> = Vec::new();
             let bloques_con_texto: Vec<_> = pagina
                 .blocks
@@ -224,44 +216,34 @@ impl ExporterPort for PdfSandwichExporter {
                 .collect();
 
             if !bloques_con_texto.is_empty() {
-                // BT = Begin Text
                 operaciones_texto.push(Operation::new("BT", vec![]));
-                // Tr 3 = Invisible text (ni fill ni stroke, pero seleccionable)
                 operaciones_texto.push(Operation::new("Tr", vec![3.into()]));
 
                 for bloque in &bloques_con_texto {
                     let bbox = &bloque.bounding_box;
 
-                    // Tamano de fuente estimado desde altura del bounding box,
-                    // acotado entre TAMANO_FUENTE_MINIMO_PT y TAMANO_FUENTE_MAXIMO_PT.
                     let alto_bloque_pt = Self::px_a_pt(bbox.height);
                     let tamano_fuente = (alto_bloque_pt * FACTOR_TAMANO_FUENTE)
                         .max(TAMANO_FUENTE_MINIMO_PT)
                         .min(TAMANO_FUENTE_MAXIMO_PT);
 
-                    // Coordenadas: pixel top-left -> PDF bottom-left
                     let x_pt = Self::px_a_pt(bbox.x);
                     let y_pt = alto_pt - Self::px_a_pt(bbox.y) - alto_bloque_pt;
 
-                    // Tf = Set font (F1 = Helvetica, definida en recursos)
                     operaciones_texto.push(Operation::new(
                         "Tf",
                         vec!["F1".into(), tamano_fuente.into()],
                     ));
-                    // Td = Move text cursor
                     operaciones_texto.push(Operation::new("Td", vec![x_pt.into(), y_pt.into()]));
-                    // Tj = Show text string
                     operaciones_texto.push(Operation::new(
                         "Tj",
                         vec![Object::string_literal(bloque.content.clone())],
                     ));
                 }
 
-                // ET = End Text
                 operaciones_texto.push(Operation::new("ET", vec![]));
             }
 
-            // Combinar ambas capas en un solo content stream
             let mut todas_las_ops = operaciones_imagen;
             todas_las_ops.extend(operaciones_texto);
 
@@ -278,7 +260,6 @@ impl ExporterPort for PdfSandwichExporter {
                 })?,
             ));
 
-            // Diccionario de recursos de la pagina
             let mut resources_dict = lopdf::Dictionary::new();
             resources_dict.set(
                 "Font",
@@ -292,7 +273,6 @@ impl ExporterPort for PdfSandwichExporter {
 
             let resources_id = doc.add_object(Object::Dictionary(resources_dict));
 
-            // Pagina
             let page_id = doc.add_object(dictionary! {
                 "Type" => "Page",
                 "Parent" => pages_id,
@@ -309,7 +289,6 @@ impl ExporterPort for PdfSandwichExporter {
             page_ids.push(page_id.into());
         }
 
-        // Pages tree root
         let pages = dictionary! {
             "Type" => "Pages",
             "Kids" => page_ids,
@@ -317,14 +296,12 @@ impl ExporterPort for PdfSandwichExporter {
         };
         doc.objects.insert(pages_id, Object::Dictionary(pages));
 
-        // Catalog
         let catalog_id = doc.add_object(dictionary! {
             "Type" => "Catalog",
             "Pages" => pages_id,
         });
         doc.trailer.set("Root", catalog_id);
 
-        // Comprimir y guardar
         doc.compress();
         doc.save(output_path)
             .map_err(|e| ExportError::SerializationError(format!("Error guardando PDF: {}", e)))?;
@@ -357,7 +334,6 @@ impl PdfSandwichExporter {
         let (ancho, alto) = rgb.dimensions();
         let pixeles_raw = rgb.into_raw();
 
-        // Crear stream de imagen como XObject
         let img_dict = lopdf::dictionary! {
             "Type" => "XObject",
             "Subtype" => "Image",
@@ -370,7 +346,6 @@ impl PdfSandwichExporter {
         let img_stream = lopdf::Stream::new(img_dict, pixeles_raw);
         let xobj_id = doc.add_object(img_stream);
 
-        // Nombre unico para este XObject
         let nombre = format!("Im{}", xobj_id.0);
 
         Ok((xobj_id, nombre))

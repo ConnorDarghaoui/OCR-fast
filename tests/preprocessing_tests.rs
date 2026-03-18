@@ -1,9 +1,3 @@
-//! Tests unitarios de funciones de preprocesamiento ONNX.
-//!
-//! Validan formas de tensores, rangos de normalizacion y
-//! propiedades geometricas (aspect ratio, padding, multiplos de 32).
-//! No requieren modelos ONNX descargados.
-
 #[cfg(test)]
 mod tests {
     use image::{DynamicImage, RgbImage};
@@ -12,7 +6,6 @@ mod tests {
     /// Genera una imagen sintetica RGB de dimensiones arbitrarias.
     fn generar_imagen(ancho: u32, alto: u32) -> DynamicImage {
         let mut img = RgbImage::new(ancho, alto);
-        // Patron tipo checkerboard para variacion de pixeles
         for y in 0..alto {
             for x in 0..ancho {
                 let valor = if (x + y) % 2 == 0 { 200 } else { 50 };
@@ -21,8 +14,6 @@ mod tests {
         }
         DynamicImage::ImageRgb8(img)
     }
-
-    // --- Orientacion (PP-LCNet) ---
 
     #[test]
     fn test_orientacion_forma_correcta() {
@@ -37,8 +28,10 @@ mod tests {
         let tensor = preprocessing::preparar_para_orientacion(&imagen);
 
         for valor in tensor.iter() {
-            assert!(valor.is_finite(), "Valor no finito en tensor de orientacion");
-            // ImageNet norm: rango tipico aprox [-2.5, 2.5]
+            assert!(
+                valor.is_finite(),
+                "Valor no finito en tensor de orientacion"
+            );
             assert!(
                 *valor >= -3.0 && *valor <= 3.0,
                 "Valor fuera de rango esperado: {}",
@@ -46,8 +39,6 @@ mod tests {
             );
         }
     }
-
-    // --- Layout (DocLayout-YOLO) ---
 
     #[test]
     fn test_layout_forma_correcta() {
@@ -63,8 +54,6 @@ mod tests {
         let imagen = generar_imagen(1920, 1080);
         let (_tensor, escala_inv_x, escala_inv_y) = preprocessing::preparar_para_layout(&imagen);
 
-        // Las escalas inversas deben permitir reconstruir coordenadas originales
-        // Para una imagen landscape, escala_x >= escala_y
         assert!(
             escala_inv_x > 0.5 && escala_inv_x < 10.0,
             "Escala inversa X fuera de rango razonable: {}",
@@ -84,7 +73,6 @@ mod tests {
 
         for valor in tensor.iter() {
             assert!(valor.is_finite(), "Valor no finito en tensor de layout");
-            // Layout normaliza a [0, 1] con padding gris ~0.447
             assert!(
                 *valor >= 0.0 && *valor <= 1.0,
                 "Valor fuera de rango [0,1]: {}",
@@ -92,8 +80,6 @@ mod tests {
             );
         }
     }
-
-    // --- Deteccion de Texto (PaddleOCR) ---
 
     #[test]
     fn test_deteccion_texto_dimensiones_multiplo_32() {
@@ -103,18 +89,8 @@ mod tests {
 
         assert_eq!(forma[0], 1, "Batch size debe ser 1");
         assert_eq!(forma[1], 3, "Canales debe ser 3");
-        assert_eq!(
-            forma[2] % 32,
-            0,
-            "Altura {} no es multiplo de 32",
-            forma[2]
-        );
-        assert_eq!(
-            forma[3] % 32,
-            0,
-            "Ancho {} no es multiplo de 32",
-            forma[3]
-        );
+        assert_eq!(forma[2] % 32, 0, "Altura {} no es multiplo de 32", forma[2]);
+        assert_eq!(forma[3] % 32, 0, "Ancho {} no es multiplo de 32", forma[3]);
     }
 
     #[test]
@@ -127,8 +103,6 @@ mod tests {
         assert_eq!(forma[3], 640, "Ancho ya multiplo de 32 no deberia cambiar");
     }
 
-    // --- Reconocimiento de Texto (PaddleOCR) ---
-
     #[test]
     fn test_reconocimiento_altura_fija_48() {
         let recorte = generar_imagen(200, 30);
@@ -138,7 +112,6 @@ mod tests {
         assert_eq!(forma[0], 1, "Batch size debe ser 1");
         assert_eq!(forma[1], 3, "Canales debe ser 3");
         assert_eq!(forma[2], 48, "Altura debe ser fija en 48");
-        // Ancho proporcional: 200 * (48/30) = 320
         assert!(forma[3] > 0, "Ancho debe ser > 0");
     }
 
@@ -156,8 +129,6 @@ mod tests {
         );
     }
 
-    // --- Tabla (Table Transformer DETR) ---
-
     #[test]
     fn test_tabla_forma_correcta() {
         let imagen = generar_imagen(500, 300);
@@ -172,7 +143,6 @@ mod tests {
 
         for valor in tensor.iter() {
             assert!(valor.is_finite(), "Valor no finito en tensor de tabla");
-            // COCO normalizacion, rango aprox [-2.5, 2.5]
             assert!(
                 *valor >= -3.0 && *valor <= 3.0,
                 "Valor fuera de rango: {}",

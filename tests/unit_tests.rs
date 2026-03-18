@@ -122,7 +122,7 @@ mod infrastructure_tests {
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
     };
     use ocrfast::infrastructure::job_store::{
-        FileJobStore, InMemoryJobStore, JobStore, normalizar_jobs_al_arranque,
+        normalizar_jobs_al_arranque, FileJobStore, InMemoryJobStore, JobStore,
     };
 
     #[test]
@@ -168,7 +168,6 @@ mod infrastructure_tests {
             formato_salida: Default::default(),
         };
 
-        // Guardar y recuperar el job
         assert!(store.save(&job).is_ok());
 
         let retrieved = store.get("test-job");
@@ -200,7 +199,6 @@ mod infrastructure_tests {
 
         store.save(&job).unwrap();
 
-        // Actualizar estado
         job.status = JobStatus::Completed;
         job.completed_at = Some(std::time::SystemTime::now());
         store.update(&job).unwrap();
@@ -234,20 +232,16 @@ mod infrastructure_tests {
         let ruta = directorio.path().join("jobs.json");
         let store = FileJobStore::with_path(&ruta);
 
-        // Inicialmente vacio
         assert_eq!(store.list().unwrap().len(), 0);
 
-        // Guardar job
         let job = job_de_prueba("file-job-1");
         store.save(&job).unwrap();
         assert_eq!(store.list().unwrap().len(), 1);
 
-        // Recuperar por id
         let recuperado = store.get("file-job-1").unwrap();
         assert_eq!(recuperado.id, "file-job-1");
         assert_eq!(recuperado.status, JobStatus::Completed);
 
-        // Actualizar estado
         let mut job_modificado = job.clone();
         job_modificado.status = JobStatus::Failed;
         job_modificado.error_message = Some("Error de prueba".to_string());
@@ -256,7 +250,6 @@ mod infrastructure_tests {
         let actualizado = store.get("file-job-1").unwrap();
         assert_eq!(actualizado.status, JobStatus::Failed);
 
-        // Eliminar
         store.delete("file-job-1").unwrap();
         assert_eq!(store.list().unwrap().len(), 0);
         assert!(store.get("file-job-1").is_err());
@@ -267,14 +260,12 @@ mod infrastructure_tests {
         let directorio = tempfile::tempdir().expect("No se pudo crear directorio temporal");
         let ruta = directorio.path().join("jobs.json");
 
-        // Primera instancia: guardar
         {
             let store = FileJobStore::with_path(&ruta);
             store.save(&job_de_prueba("persistencia-1")).unwrap();
             store.save(&job_de_prueba("persistencia-2")).unwrap();
         }
 
-        // Segunda instancia: leer del mismo archivo
         {
             let store = FileJobStore::with_path(&ruta);
             let jobs = store.list().unwrap();
@@ -321,9 +312,9 @@ mod infrastructure_tests {
 
 #[cfg(test)]
 mod postprocessor_tests {
+    use ocrfast::domain::{Block, BlockType, Dimensions, Document, Page, Rectangle};
     use ocrfast::infrastructure::postprocessors::TextPostprocessor;
     use ocrfast::interfaces::ports::PostprocessorPort;
-    use ocrfast::domain::{Block, BlockType, Dimensions, Document, Page, Rectangle};
     use std::collections::HashMap;
 
     fn documento_con_bloque(contenido: &str) -> Document {
@@ -332,11 +323,19 @@ mod postprocessor_tests {
             source_path: std::path::PathBuf::from("/tmp/pp.png"),
             pages: vec![Page {
                 number: 1,
-                dimensions: Dimensions { width: 100, height: 100 },
+                dimensions: Dimensions {
+                    width: 100,
+                    height: 100,
+                },
                 image_data: None,
                 blocks: vec![Block {
                     block_type: BlockType::Text,
-                    bounding_box: Rectangle { x: 0, y: 0, width: 100, height: 20 },
+                    bounding_box: Rectangle {
+                        x: 0,
+                        y: 0,
+                        width: 100,
+                        height: 20,
+                    },
                     content: contenido.to_string(),
                     confidence: 0.9,
                     embedded_image: None,
@@ -350,7 +349,6 @@ mod postprocessor_tests {
 
     #[test]
     fn test_postprocessor_normaliza_unicode() {
-        // fi/fl ligature -> fi/fl ASCII
         let pp = TextPostprocessor::with_config(true, false, true);
         let mut doc = documento_con_bloque("\u{FB01}le \u{FB02}oor");
         pp.postprocess(&mut doc).unwrap();
@@ -367,7 +365,6 @@ mod postprocessor_tests {
 
     #[test]
     fn test_postprocessor_comillas_tipograficas() {
-        // Comillas Unicode → ASCII
         let pp = TextPostprocessor::with_config(false, false, true);
         let mut doc = documento_con_bloque("\u{201C}hola\u{201D} y \u{2018}mundo\u{2019}");
         pp.postprocess(&mut doc).unwrap();
@@ -385,15 +382,14 @@ mod postprocessor_tests {
             pp.postprocess(&mut doc).unwrap();
             assert_eq!(
                 doc.pages[0].blocks[0].content, palabra,
-                "La palabra '{}' no debe ser modificada (antipatron rn->m eliminado)", palabra
+                "La palabra '{}' no debe ser modificada (antipatron rn->m eliminado)",
+                palabra
             );
         }
     }
 
     #[test]
     fn test_postprocessor_corrige_palabras_ocr() {
-        // Palabras OCR comunes en ingles deben corregirse cuando el idioma es "eng".
-        // with_config() defaultea a "spa"; se debe especificar el idioma explicitamente.
         let pp = TextPostprocessor::with_config(false, false, true).with_language("eng");
         let mut doc = documento_con_bloque("tbe quick brown fox");
         pp.postprocess(&mut doc).unwrap();
@@ -404,8 +400,8 @@ mod postprocessor_tests {
 #[cfg(test)]
 mod exporter_tests {
     use ocrfast::domain::{
-        Block, BlockType, Dimensions, Document, Job, JobStatus, Page,
-        ProcessingProfile, Rectangle, TableCell, TableStructure,
+        Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
+        TableCell, TableStructure,
     };
     use ocrfast::infrastructure::exporters::{JsonExporter, MarkdownExporter};
     use ocrfast::interfaces::ports::ExporterPort;
@@ -418,16 +414,52 @@ mod exporter_tests {
                 num_cols: 2,
                 rows: vec![
                     vec![
-                        TableCell { content: "Nombre".to_string(), row_span: 1, col_span: 1,
-                            bounding_box: Rectangle { x: 0, y: 0, width: 100, height: 20 } },
-                        TableCell { content: "Edad".to_string(), row_span: 1, col_span: 1,
-                            bounding_box: Rectangle { x: 100, y: 0, width: 100, height: 20 } },
+                        TableCell {
+                            content: "Nombre".to_string(),
+                            row_span: 1,
+                            col_span: 1,
+                            bounding_box: Rectangle {
+                                x: 0,
+                                y: 0,
+                                width: 100,
+                                height: 20,
+                            },
+                        },
+                        TableCell {
+                            content: "Edad".to_string(),
+                            row_span: 1,
+                            col_span: 1,
+                            bounding_box: Rectangle {
+                                x: 100,
+                                y: 0,
+                                width: 100,
+                                height: 20,
+                            },
+                        },
                     ],
                     vec![
-                        TableCell { content: "Ana".to_string(), row_span: 1, col_span: 1,
-                            bounding_box: Rectangle { x: 0, y: 20, width: 100, height: 20 } },
-                        TableCell { content: "30".to_string(), row_span: 1, col_span: 1,
-                            bounding_box: Rectangle { x: 100, y: 20, width: 100, height: 20 } },
+                        TableCell {
+                            content: "Ana".to_string(),
+                            row_span: 1,
+                            col_span: 1,
+                            bounding_box: Rectangle {
+                                x: 0,
+                                y: 20,
+                                width: 100,
+                                height: 20,
+                            },
+                        },
+                        TableCell {
+                            content: "30".to_string(),
+                            row_span: 1,
+                            col_span: 1,
+                            bounding_box: Rectangle {
+                                x: 100,
+                                y: 20,
+                                width: 100,
+                                height: 20,
+                            },
+                        },
                     ],
                 ],
             })
@@ -440,11 +472,19 @@ mod exporter_tests {
             source_path: std::path::PathBuf::from("/tmp/exp.png"),
             pages: vec![Page {
                 number: 1,
-                dimensions: Dimensions { width: 300, height: 200 },
+                dimensions: Dimensions {
+                    width: 300,
+                    height: 200,
+                },
                 image_data: None,
                 blocks: vec![Block {
                     block_type: BlockType::Table,
-                    bounding_box: Rectangle { x: 0, y: 0, width: 300, height: 100 },
+                    bounding_box: Rectangle {
+                        x: 0,
+                        y: 0,
+                        width: 300,
+                        height: 100,
+                    },
                     content: "Nombre | Edad\nAna | 30".to_string(),
                     confidence: 0.9,
                     embedded_image: None,
@@ -477,15 +517,18 @@ mod exporter_tests {
         exporter.export(&job_con_tabla(true), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
-        // Debe contener el separador de tabla Markdown (---)
         assert!(
             contenido.contains("---"),
             "Tabla con estructura debe usar formato Markdown con separadores"
         );
-        // Debe contener la cabecera
-        assert!(contenido.contains("Nombre"), "Debe contener nombre de columna");
-        assert!(contenido.contains("Edad"), "Debe contener nombre de columna");
-        // No debe contener el wrapper de codigo que usaba el fallback
+        assert!(
+            contenido.contains("Nombre"),
+            "Debe contener nombre de columna"
+        );
+        assert!(
+            contenido.contains("Edad"),
+            "Debe contener nombre de columna"
+        );
         assert!(
             !contenido.contains("```\n[Tabla]"),
             "No debe usar el fallback de bloque de codigo antiguo"
@@ -504,7 +547,6 @@ mod exporter_tests {
         exporter.export(&job_con_tabla(false), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
-        // Sin estructura: debe usar el bloque de codigo con el texto del bloque
         assert!(
             contenido.contains("Nombre | Edad"),
             "Sin estructura debe exportar el texto plano del bloque"
@@ -524,8 +566,8 @@ mod exporter_tests {
 
         assert!(ruta.exists(), "El archivo JSON debe existir");
         let contenido = std::fs::read_to_string(&ruta).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&contenido)
-            .expect("El JSON generado debe ser valido");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&contenido).expect("El JSON generado debe ser valido");
         assert_eq!(parsed["id"], "job-exp");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -534,9 +576,9 @@ mod exporter_tests {
 
 #[cfg(test)]
 mod preprocessor_image_tests {
+    use ocrfast::domain::{Dimensions, Document, Page};
     use ocrfast::infrastructure::preprocessors::ImagePreprocessor;
     use ocrfast::interfaces::ports::PreprocessorPort;
-    use ocrfast::domain::{Document, Page, Dimensions};
 
     fn png_gris_sintetico(ancho: u32, alto: u32, valor: u8) -> Vec<u8> {
         let img = image::GrayImage::from_pixel(ancho, alto, image::Luma([valor]));
@@ -553,7 +595,10 @@ mod preprocessor_image_tests {
             source_path: std::path::PathBuf::from("/tmp/test.png"),
             pages: vec![Page {
                 number: 1,
-                dimensions: Dimensions { width: 100, height: 100 },
+                dimensions: Dimensions {
+                    width: 100,
+                    height: 100,
+                },
                 blocks: vec![],
                 image_data: Some(imagen),
             }],
@@ -567,21 +612,20 @@ mod preprocessor_image_tests {
         let imagen = png_gris_sintetico(100, 100, 128);
         let mut doc = documento_con_imagen(imagen);
 
-        pp.preprocess(&mut doc).expect("Binarizacion no debe fallar");
+        pp.preprocess(&mut doc)
+            .expect("Binarizacion no debe fallar");
 
         let image_data = doc.pages[0].image_data.as_ref().unwrap();
         assert!(!image_data.is_empty());
 
-        // Verificar que el resultado es una imagen PNG decodificable
-        let img_resultado = image::load_from_memory(image_data)
-            .expect("La imagen binarizada debe ser PNG valido");
+        let img_resultado =
+            image::load_from_memory(image_data).expect("La imagen binarizada debe ser PNG valido");
         assert_eq!(img_resultado.width(), 100);
         assert_eq!(img_resultado.height(), 100);
     }
 
     #[test]
     fn test_binarizacion_imagen_totalmente_blanca_no_panics() {
-        // Imagen blanca pura: umbral Otsu debe manejar histograma degenerado
         let pp = ImagePreprocessor::with_config(true, false, false, 300);
         let imagen = png_gris_sintetico(50, 50, 255);
         let mut doc = documento_con_imagen(imagen);
@@ -604,7 +648,6 @@ mod preprocessor_image_tests {
 
     #[test]
     fn test_deskew_imagen_sin_inclinacion_no_panics() {
-        // Una imagen uniforme no tiene angulo detectable; debe no hacer nada sin error
         let pp = ImagePreprocessor::with_config(false, true, false, 300);
         let imagen = png_gris_sintetico(100, 150, 200);
         let mut doc = documento_con_imagen(imagen);
@@ -613,14 +656,13 @@ mod preprocessor_image_tests {
 
     #[test]
     fn test_pipeline_completo_no_panics() {
-        // Todos los pasos en orden correcto: denoise -> binarize -> deskew
         let pp = ImagePreprocessor::new();
         let imagen = png_gris_sintetico(120, 160, 180);
         let mut doc = documento_con_imagen(imagen);
 
-        pp.preprocess(&mut doc).expect("Pipeline completo no debe fallar");
+        pp.preprocess(&mut doc)
+            .expect("Pipeline completo no debe fallar");
 
-        // La imagen debe seguir siendo valida y del mismo tamanio
         let image_data = doc.pages[0].image_data.as_ref().unwrap();
         let img = image::load_from_memory(image_data).unwrap();
         assert_eq!(img.width(), 120);
@@ -635,7 +677,10 @@ mod preprocessor_image_tests {
             source_path: std::path::PathBuf::from("/tmp/test.pdf"),
             pages: vec![Page {
                 number: 1,
-                dimensions: Dimensions { width: 100, height: 100 },
+                dimensions: Dimensions {
+                    width: 100,
+                    height: 100,
+                },
                 blocks: vec![],
                 image_data: None,
             }],
@@ -648,26 +693,22 @@ mod preprocessor_image_tests {
 
 #[cfg(test)]
 mod layout_engine_tests {
+    use ocrfast::domain::{Block, BlockType, Dimensions, Page};
     use ocrfast::infrastructure::layout_engines::XyCutLayoutEngine;
     use ocrfast::interfaces::ports::LayoutEnginePort;
-    use ocrfast::domain::{Page, Dimensions, Block, BlockType};
 
     fn pagina_con_imagen_sintetica(ancho: u32, alto: u32) -> Page {
-        // Imagen con franjas horizontales oscuras simulando texto
         let mut img = image::RgbImage::new(ancho, alto);
-        // Fondo blanco
         for y in 0..alto {
             for x in 0..ancho {
                 img.put_pixel(x, y, image::Rgb([255, 255, 255]));
             }
         }
-        // Franja oscura en parte superior (titulo simulado)
         for y in 50..80 {
             for x in 50..ancho - 50 {
                 img.put_pixel(x, y, image::Rgb([30, 30, 30]));
             }
         }
-        // Franja oscura en cuerpo (texto simulado)
         for y in 150..300 {
             for x in 50..ancho - 50 {
                 img.put_pixel(x, y, image::Rgb([40, 40, 40]));
@@ -681,7 +722,10 @@ mod layout_engine_tests {
 
         Page {
             number: 1,
-            dimensions: Dimensions { width: ancho, height: alto },
+            dimensions: Dimensions {
+                width: ancho,
+                height: alto,
+            },
             blocks: vec![],
             image_data: Some(buffer.into_inner()),
         }
@@ -694,7 +738,6 @@ mod layout_engine_tests {
 
         let bloques = engine.analyze(&page).expect("XY-Cut no debe fallar");
 
-        // Debe detectar al menos 1 bloque en una imagen con contenido visible
         assert!(!bloques.is_empty(), "Debe detectar al menos un bloque");
     }
 
@@ -706,8 +749,14 @@ mod layout_engine_tests {
         let bloques = engine.analyze(&page).unwrap();
 
         for bloque in &bloques {
-            assert!(bloque.bounding_box.width > 0, "Bloque debe tener ancho positivo");
-            assert!(bloque.bounding_box.height > 0, "Bloque debe tener alto positivo");
+            assert!(
+                bloque.bounding_box.width > 0,
+                "Bloque debe tener ancho positivo"
+            );
+            assert!(
+                bloque.bounding_box.height > 0,
+                "Bloque debe tener alto positivo"
+            );
             assert!(
                 bloque.bounding_box.x + bloque.bounding_box.width <= 600,
                 "Bloque no debe exceder ancho de pagina"
@@ -739,7 +788,12 @@ mod layout_engine_tests {
         let engine = XyCutLayoutEngine::new();
         let bloque_existente = Block {
             block_type: BlockType::Text,
-            bounding_box: ocrfast::domain::Rectangle { x: 0, y: 0, width: 100, height: 50 },
+            bounding_box: ocrfast::domain::Rectangle {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 50,
+            },
             content: "texto previo".to_string(),
             confidence: 0.9,
             embedded_image: None,
@@ -748,7 +802,10 @@ mod layout_engine_tests {
         };
         let page = Page {
             number: 1,
-            dimensions: Dimensions { width: 600, height: 400 },
+            dimensions: Dimensions {
+                width: 600,
+                height: 400,
+            },
             blocks: vec![bloque_existente],
             image_data: None,
         };
@@ -762,15 +819,20 @@ mod layout_engine_tests {
     fn test_xy_cut_imagen_totalmente_blanca_retorna_cero_bloques() {
         let engine = XyCutLayoutEngine::new();
         let mut buffer = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_pixel(200, 200, image::Luma([255u8]))
-        )
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(
+            200,
+            200,
+            image::Luma([255u8]),
+        ))
         .write_to(&mut buffer, image::ImageFormat::Png)
         .unwrap();
 
         let page = Page {
             number: 1,
-            dimensions: Dimensions { width: 200, height: 200 },
+            dimensions: Dimensions {
+                width: 200,
+                height: 200,
+            },
             blocks: vec![],
             image_data: Some(buffer.into_inner()),
         };
@@ -787,15 +849,16 @@ mod pipeline_cancelacion_tests {
     use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
     use ocrfast::infrastructure::ocr_engines::stub::StubOcrEngine;
     use std::path::Path;
-    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
 
     /// Verifica que un flag de cancelacion pre-activado detiene el pipeline tras el parseo.
     #[test]
     fn test_pipeline_cancelado_antes_de_primera_fase_retorna_error() {
-        let pipeline = OcrPipeline::new(
-            Arc::new(StubDocumentParser::new()),
-            Arc::new(StubOcrEngine),
-        );
+        let pipeline =
+            OcrPipeline::new(Arc::new(StubDocumentParser::new()), Arc::new(StubOcrEngine));
 
         let cancel_flag = Arc::new(AtomicBool::new(true)); // Pre-cancelado
         let ruta = Path::new("/tmp/doc_cancelar.pdf");
@@ -818,10 +881,8 @@ mod pipeline_cancelacion_tests {
     /// Verifica que sin flag de cancelacion el pipeline se completa normalmente.
     #[test]
     fn test_pipeline_sin_cancelacion_completa_correctamente() {
-        let pipeline = OcrPipeline::new(
-            Arc::new(StubDocumentParser::new()),
-            Arc::new(StubOcrEngine),
-        );
+        let pipeline =
+            OcrPipeline::new(Arc::new(StubDocumentParser::new()), Arc::new(StubOcrEngine));
 
         let resultado = pipeline.procesar_documento(
             Path::new("/tmp/doc_normal.pdf"),
@@ -830,16 +891,18 @@ mod pipeline_cancelacion_tests {
             None,
         );
 
-        assert!(resultado.is_ok(), "Pipeline sin cancelacion debe completarse: {:?}", resultado.err());
+        assert!(
+            resultado.is_ok(),
+            "Pipeline sin cancelacion debe completarse: {:?}",
+            resultado.err()
+        );
     }
 
     /// Verifica que activar el flag despues de iniciado no afecta un pipeline ya terminado.
     #[test]
     fn test_cancel_flag_activado_despues_no_afecta_pipeline_completado() {
-        let pipeline = OcrPipeline::new(
-            Arc::new(StubDocumentParser::new()),
-            Arc::new(StubOcrEngine),
-        );
+        let pipeline =
+            OcrPipeline::new(Arc::new(StubDocumentParser::new()), Arc::new(StubOcrEngine));
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let flag_clone = Arc::clone(&cancel_flag);
@@ -851,10 +914,12 @@ mod pipeline_cancelacion_tests {
             Some(&cancel_flag),
         );
 
-        // Activar el flag despues de que el pipeline termino no tiene efecto
         flag_clone.store(true, Ordering::Relaxed);
 
-        assert!(resultado.is_ok(), "Pipeline que termino antes de cancelar debe retornar Ok");
+        assert!(
+            resultado.is_ok(),
+            "Pipeline que termino antes de cancelar debe retornar Ok"
+        );
     }
 }
 

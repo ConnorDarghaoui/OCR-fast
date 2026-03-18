@@ -1,23 +1,12 @@
-// ! Tests de integracion con documentos reales.
-//!
-//! Estos tests solo se ejecutan cuando la feature `ci_real_docs` esta habilitada,
-//! para no bloquear el CI normal que no tiene modelos ONNX descargados.
-//!
-//! Para ejecutar:
-//! ```bash
-//! cargo test --features ci_real_docs --test real_document_tests -- --ignored
-//! ```
-//!
-//! Los documentos de prueba se descargan automaticamente a /tmp/ocrfast_test_docs/
-//! si no existen. El directorio es limpiado tras cada ejecucion de test.
-
 #[cfg(feature = "ci_real_docs")]
 mod real_document_tests {
     use ocrfast::application::pipeline::OcrPipeline;
     use ocrfast::domain::ProcessingProfile;
-    use ocrfast::infrastructure::ocr_engines::onnx::{engine::OnnxOcrEngine, model_downloader::ModelDownloader};
-    use ocrfast::infrastructure::parsers::pdfium::PdfiumParser;
     use ocrfast::infrastructure::layout_engines::XyCutLayoutEngine;
+    use ocrfast::infrastructure::ocr_engines::onnx::{
+        engine::OnnxOcrEngine, model_downloader::ModelDownloader,
+    };
+    use ocrfast::infrastructure::parsers::pdfium::PdfiumParser;
     use ocrfast::infrastructure::postprocessors::TextPostprocessor;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -31,26 +20,20 @@ mod real_document_tests {
     /// - Dos columnas (estructura academica)
     /// - PDF escaneado (imagen, requiere OCR completo)
     const DOCUMENTOS_PRUEBA: &[(&str, &str)] = &[
-        // PDF de ejemplo de una columna — W3C spec fragment
         (
             "https://www.w3.org/WAI/WCAG21/wcag21-intro.pdf",
             "una_columna.pdf",
         ),
-        // Paper de dos columnas — arXiv (dominio publico)
         (
-            "https://arxiv.org/pdf/1706.03762",  // Attention Is All You Need
+            "https://arxiv.org/pdf/1706.03762", // Attention Is All You Need
             "dos_columnas.pdf",
         ),
     ];
 
     /// Ground truth minimo para verificar que el OCR produce texto coherente.
     /// No es un test de CER exacto, solo verifica que el texto no sea completamente incorrecto.
-    const PALABRAS_ESPERADAS_UNA_COLUMNA: &[&str] = &[
-        "accessibility", "guidelines", "content",
-    ];
-    const PALABRAS_ESPERADAS_DOS_COLUMNAS: &[&str] = &[
-        "attention", "model", "transformer",
-    ];
+    const PALABRAS_ESPERADAS_UNA_COLUMNA: &[&str] = &["accessibility", "guidelines", "content"];
+    const PALABRAS_ESPERADAS_DOS_COLUMNAS: &[&str] = &["attention", "model", "transformer"];
 
     fn descargar_si_falta(url: &str, nombre: &str) -> PathBuf {
         let dir = Path::new(DIRECTORIO_PRUEBAS);
@@ -63,15 +46,15 @@ mod real_document_tests {
         eprintln!("Descargando documento de prueba: {}", url);
         let respuesta = reqwest::blocking::get(url)
             .expect("No se pudo conectar para descargar documento de prueba");
-        let bytes = respuesta.bytes().expect("Error leyendo cuerpo de respuesta");
+        let bytes = respuesta
+            .bytes()
+            .expect("Error leyendo cuerpo de respuesta");
         std::fs::write(&ruta, &bytes).expect("Error guardando documento de prueba en disco");
         ruta
     }
 
     fn construir_pipeline() -> OcrPipeline {
-        // El downloader ya debe tener los modelos; falla si no estan.
-        let downloader = ModelDownloader::new()
-            .expect("No se pudo inicializar ModelDownloader");
+        let downloader = ModelDownloader::new().expect("No se pudo inicializar ModelDownloader");
         assert!(
             downloader.todos_los_modelos_disponibles(),
             "Modelos ONNX no disponibles. Ejecutar la app una vez para descargarlos."
@@ -153,7 +136,6 @@ mod real_document_tests {
             .procesar_documento(&ruta, &ProcessingProfile::Accurate, None, Some(&cancela))
             .expect("El pipeline fallo con el documento de dos columnas");
 
-        // Un documento de dos columnas debe tener mas de 2 bloques por pagina en promedio
         let total_bloques: usize = doc.pages.iter().map(|p| p.blocks.len()).sum();
         let paginas = doc.pages.len();
         assert!(paginas > 0, "No se procesaron paginas");
@@ -181,15 +163,13 @@ mod real_document_tests {
         );
 
         eprintln!("Hitrate dos columnas: {:.1}%", hitrate * 100.0);
-        eprintln!("Paginas: {}, Bloques totales: {}, Bloques/pagina: {:.1}",
-            paginas, total_bloques, bloques_por_pagina);
+        eprintln!(
+            "Paginas: {}, Bloques totales: {}, Bloques/pagina: {:.1}",
+            paginas, total_bloques, bloques_por_pagina
+        );
     }
 }
 
-// Si la feature no esta habilitada, al menos compilar un test dummy para que el binario exista.
 #[cfg(not(feature = "ci_real_docs"))]
 #[test]
-fn test_ci_real_docs_no_activo() {
-    // Tests de documento real deshabilitados.
-    // Ejecutar con: cargo test --features ci_real_docs --test real_document_tests -- --ignored
-}
+fn test_ci_real_docs_no_activo() {}

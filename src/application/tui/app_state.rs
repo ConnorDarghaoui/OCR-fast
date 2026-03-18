@@ -291,26 +291,17 @@ impl AppState {
         self.crear_trabajo(ruta, formato)
     }
 
-    /// [COMPONENTE] Controlador de creacion de trabajos (Job).
+    /// Crea, persiste y encola un trabajo nuevo a partir de una ruta validada.
     ///
-    /// [PROPÓSITO] Construir, persistir y encolar la entidad Job en base a los parametros confirmados,
-    /// aplicando validaciones de proteccion frente a la inmadurez de infraestructura (motores cargando).
+    /// La función impone dos invariantes operativos: no aceptar nuevos trabajos
+    /// mientras el backend real aún no terminó de inicializar y no permitir
+    /// duplicados activos sobre el mismo archivo fuente. Eso evita carreras de
+    /// UX y reduce trabajo inútil en motores costosos.
     ///
-    /// [ENTRADAS]
-    /// - `ruta`: Ruta del archivo objetivo almacenada como String.
-    /// - `formato`: El formato de salida destino.
+    /// # Errors
     ///
-    /// [FLUJO DE EJECUCIÓN]
-    /// |> Valida el bloqueo de control contra inicializaciones asincronas del motor.
-    /// |> Ejecuta alertas preventivas en caso de usar el motor degradado (Stub).
-    /// |> Valida mediante iteracion si el archivo base ya se encuentra en cola para prevenir repeticion de carga.
-    /// |> Delega a `analizador_documentos` la traduccion del archivo fisico hacia el modelo interno (Document).
-    /// |> Muta el Repositorio inyectado salvando el estado Queue de la nueva estructura.
-    /// |> Asigna el Job la lista viva, genera logs y delega el arranque background.
-    ///
-    /// [RESULTADO] `Result<(), String>`
-    ///
-    /// [EXCEPCIONES] Retorna `Err` si el archivo ya esta encolado, si el Engine esta bloqueado o problemas parseando IO del Document.
+    /// Retorna `Err` si el motor aún no está disponible, si la ruta ya está
+    /// encolada o si el parser no puede construir el `Document` inicial.
     fn crear_trabajo(&mut self, ruta: String, formato: OutputFormat) -> Result<(), String> {
         if !self.motor_cargado {
             return Err(
@@ -370,25 +361,19 @@ impl AppState {
         Ok(())
     }
 
-    /// [COMPONENTE] Orquestador de hilos de ejecucion (Spawner).
+    /// Desacopla el procesamiento OCR de la hebra de render de la TUI.
     ///
-    /// [PROPÓSITO] Separar y aislar la computacion costosa (OCR) del bloque sincronizador (TUI), promoviendo
-    /// un diseno verdaderamente concurrente basado en pasos de mensajes puros (mpsc).
+    /// # Concurrency
     ///
-    /// [ENTRADAS]
-    /// - `id_trabajo`: Cadena del identificador unico a procesar.
+    /// Cada trabajo obtiene su propio canal `mpsc` y un `AtomicBool` de
+    /// cancelación cooperativa. El diseño evita compartir `&mut self` con el
+    /// worker, preserva las reglas del borrow checker y deja toda mutación de UI
+    /// centralizada en el thread principal.
     ///
-    /// [FLUJO DE EJECUCIÓN]
-    /// |> Busca el indice estructural del Job local asociado.
-    /// |> Muta el indicador de progreso y el estado a Procesando.
-    /// |> Inicializa el canal asincrono (TX/RX) y anexa el RX al manejador global continuo.
-    /// |> Crea el flag de detencion atomico y lo almacena habilitando la cancelacion iterativa.
-    /// |> Delega dentro de un Thread OS el ciclo de vida del Job configurando pre-/post-process.
-    /// |> Transmite por puente el resultado final sin bloquear la TUI.
+    /// # Notes
     ///
-    /// [RESULTADO] Ninguno / Side Effects asincronos.
-    ///
-    /// [EXCEPCIONES] Retorna vacio silenciosamente si la ID ha desaparecido de la lista central.
+    /// Si el trabajo ya no existe en memoria cuando se invoca, la función
+    /// retorna silenciosamente para no reintroducir referencias colgantes.
     fn iniciar_procesamiento_fondo(&mut self, id_trabajo: String) {
         let posicion = self.trabajos.iter().position(|j| j.id == id_trabajo);
         let indice = match posicion {
@@ -404,7 +389,6 @@ impl AppState {
         let (tx, rx) = std::sync::mpsc::channel();
         self.receptores_activos.insert(id_trabajo.clone(), rx);
 
-        // Crear flag de cancelacion para este job
         let cancel_flag = Arc::new(AtomicBool::new(false));
         self.cancelaciones_activas
             .insert(id_trabajo.clone(), Arc::clone(&cancel_flag));
@@ -683,10 +667,6 @@ impl AppState {
                         trabajos_terminados.push(id_trabajo.clone());
                     }
                     PipelineEvent::Error(mensaje) => {
-                        // Cancelacion y error real comparten el mismo variante para simplificar
-                        // el pipeline (evita un PipelineEvent::Cancelado adicional). La distincion
-                        // se hace aqui por string porque es la unica capa que conoce MSG_JOB_CANCELADO
-                        // y necesita mapear a JobStatus::Cancelled vs JobStatus::Failed.
                         let es_cancelacion = mensaje == MSG_JOB_CANCELADO;
 
                         if let Some(trabajo) =
@@ -982,7 +962,6 @@ fn cargar_trabajos_iniciales(store: &dyn JobStorePort) -> (Vec<Job>, Vec<String>
                 })
                 .count();
 
-            // Persistir los jobs normalizados (Processing -> Failed)
             for job in &jobs {
                 if job.status == JobStatus::Failed
                     && job.error_message.as_deref()

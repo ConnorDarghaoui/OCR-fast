@@ -153,7 +153,6 @@ impl FileJobStore {
 
     /// Persiste el mapa completo de jobs en disco de forma atomica.
     fn persistir(&self, jobs: &HashMap<String, Job>) -> Result<(), JobStoreError> {
-        // Garantizar que el directorio padre existe
         if let Some(directorio) = self.ruta_archivo.parent() {
             fs::create_dir_all(directorio).map_err(|e| {
                 JobStoreError::PersistenceError(format!("Error creando directorio: {}", e))
@@ -164,7 +163,6 @@ impl FileJobStore {
             JobStoreError::PersistenceError(format!("Error serializando jobs: {}", e))
         })?;
 
-        // Escritura atomica: temp + rename
         let ruta_temporal = self.ruta_archivo.with_extension("tmp");
         let mut archivo = fs::File::create(&ruta_temporal).map_err(|e| {
             JobStoreError::PersistenceError(format!("Error creando archivo temporal: {}", e))
@@ -226,7 +224,6 @@ impl JobStorePort for FileJobStore {
 
     fn list(&self) -> Result<Vec<Job>, JobStoreError> {
         let mut jobs: Vec<Job> = self.cargar()?.into_values().collect();
-        // Ordenar por fecha de creacion para orden determinista en la UI
         jobs.sort_by_key(|j| j.created_at);
         Ok(jobs)
     }

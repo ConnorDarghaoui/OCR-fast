@@ -1,9 +1,3 @@
-//! Build script para descarga automatica de libpdfium.
-//!
-//! Descarga el binario precompilado de libpdfium desde el repositorio
-//! bblanchon/pdfium-binaries si no existe localmente. Esto permite
-//! que el proyecto funcione "plug and play" sin instalar nada manualmente.
-
 use flate2::read::GzDecoder;
 use std::env;
 use std::fs;
@@ -83,11 +77,7 @@ fn extraer_libreria(
         let mut entrada = entrada?;
         let ruta = entrada.path()?.to_path_buf();
 
-        // Buscar la libreria dentro del .tgz (esta en lib/ o en la raiz)
-        let nombre_archivo = ruta
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let nombre_archivo = ruta.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if nombre_archivo == nombre_lib {
             let ruta_destino = dir_destino.join(nombre_lib);
@@ -125,33 +115,29 @@ fn copiar_a_target_profile(ruta_lib: &Path, dir_proyecto: &Path, nombre_lib: &st
     }
 }
 
+/// Resuelve `pdfium` antes de compilar el crate principal.
+///
+/// El build script fija una versión conocida de `pdfium-binaries`, reutiliza
+/// artefactos ya presentes en el árbol del proyecto y deja la librería junto al
+/// ejecutable final para evitar dependencias implícitas del directorio de
+/// trabajo desde el que se lance el binario.
 fn main() {
     let nombre_lib = obtener_nombre_libreria();
-
-    // Directorio del proyecto (donde esta Cargo.toml)
     let dir_proyecto = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let ruta_lib_proyecto = dir_proyecto.join(nombre_lib);
 
-    // Si la libreria ya existe en el directorio del proyecto, usarla directamente
     if ruta_lib_proyecto.exists() {
         eprintln!(
             "cargo:warning=Usando {} existente en {}",
             nombre_lib,
             ruta_lib_proyecto.display()
         );
-        // Indicar al linker donde buscar (para dynamic linking en runtime)
-        println!(
-            "cargo:rustc-link-search=native={}",
-            dir_proyecto.display()
-        );
-        // Rerun si se elimina la libreria
+        println!("cargo:rustc-link-search=native={}", dir_proyecto.display());
         println!("cargo:rerun-if-changed={}", ruta_lib_proyecto.display());
-        // Copiar a target/{profile}/ para que el binario la encuentre desde cualquier CWD
         copiar_a_target_profile(&ruta_lib_proyecto, &dir_proyecto, nombre_lib);
         return;
     }
 
-    // No existe: descargar
     let nombre_asset = obtener_nombre_asset();
     let url = format!(
         "https://github.com/bblanchon/pdfium-binaries/releases/download/{}/{}",
@@ -163,7 +149,6 @@ fn main() {
 
     let ruta_tgz = dir_temporal.join(nombre_asset);
 
-    // Descargar si no esta el .tgz cacheado
     if !ruta_tgz.exists() {
         if let Err(e) = descargar_pdfium(&url, &ruta_tgz) {
             eprintln!("cargo:warning=FALLO descargando pdfium: {}", e);
@@ -177,16 +162,11 @@ fn main() {
         }
     }
 
-    // Extraer libreria al directorio del proyecto
     match extraer_libreria(&ruta_tgz, &dir_proyecto, nombre_lib) {
         Ok(_ruta) => {
-            println!(
-                "cargo:rustc-link-search=native={}",
-                dir_proyecto.display()
-            );
+            println!("cargo:rustc-link-search=native={}", dir_proyecto.display());
             println!("cargo:rerun-if-changed={}", ruta_lib_proyecto.display());
             eprintln!("cargo:warning=libpdfium configurado exitosamente (plug and play)");
-            // Copiar a target/{profile}/ para que el binario la encuentre desde cualquier CWD
             copiar_a_target_profile(&ruta_lib_proyecto, &dir_proyecto, nombre_lib);
         }
         Err(e) => {

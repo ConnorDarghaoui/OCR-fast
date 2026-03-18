@@ -3,10 +3,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const CHUNK_SIZE: usize = 65_536; // 64 KB por lectura
+const CHUNK_SIZE: usize = 65_536;
 const MAX_REINTENTOS: u32 = 3;
 const ESPERA_REINTENTO_SECS: u64 = 2;
-const CHUNKS_POR_REPORTE: usize = 8; // reportar progreso cada 512 KB
+const CHUNKS_POR_REPORTE: usize = 8;
 
 struct ModelDefinition {
     categoria: &'static str,
@@ -14,10 +14,9 @@ struct ModelDefinition {
     url: &'static str,
     /// SHA256 del archivo descargado en hexadecimal sin prefijo.
     ///
-    /// `None` = sin verificacion (aceptar cualquier contenido).
-    /// `Some(hash)` = se verifica durante la descarga Y al arrancar si el archivo ya existe.
-    ///
-    /// TODO: Rellenar con `sha256sum` una vez descargados los modelos por primera vez.
+    /// `None` mantiene compatibilidad con catálogos remotos que el proyecto aún
+    /// no ha pinneado criptográficamente. Cuando exista hash fijado, el archivo
+    /// se valida tanto tras la descarga como durante arranques posteriores.
     sha256_esperado: Option<&'static str>,
 }
 
@@ -26,55 +25,55 @@ const MODELOS_REQUERIDOS: &[ModelDefinition] = &[
         categoria: "orientation",
         nombre_archivo: "PP-LCNet_x1_0_doc_ori.onnx",
         url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/preprocessing/doc-orientation/PP-LCNet_x1_0_doc_ori.onnx",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "orientation",
         nombre_archivo: "config.json",
         url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/preprocessing/doc-orientation/config.json",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "layout",
         nombre_archivo: "doclayout_yolo_docstructbench_imgsz1024.onnx",
         url: "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/doclayout_yolo_docstructbench_imgsz1024.onnx",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "ocr",
         nombre_archivo: "det.onnx",
         url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/detection/v5/det.onnx",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "ocr",
         nombre_archivo: "det_config.json",
         url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/detection/v5/config.json",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "ocr",
         nombre_archivo: "rec.onnx",
         url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/latin/rec.onnx",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "ocr",
         nombre_archivo: "dict.txt",
         url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/latin/dict.txt",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "table",
         nombre_archivo: "model_uint8.onnx",
         url: "https://huggingface.co/Xenova/table-transformer-structure-recognition/resolve/main/onnx/model_uint8.onnx",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "table",
         nombre_archivo: "config.json",
         url: "https://huggingface.co/Xenova/table-transformer-structure-recognition/resolve/main/config.json",
-        sha256_esperado: None, // TODO: completar tras primera descarga
+        sha256_esperado: None,
     },
     ModelDefinition {
         categoria: "table",
@@ -171,9 +170,6 @@ impl ModelDownloader {
                 .join(def.nombre_archivo);
 
             if destino.exists() {
-                // Si el modelo ya existe y tiene checksum, reverificar integridad en disco.
-                // Esto previene que una descarga parcial previa (sin checksum en esa epoca)
-                // pase desapercibida y crashee ONNX Runtime al cargar.
                 if let Some(hash_esperado) = def.sha256_esperado {
                     match self.verificar_checksum_disco(&destino, hash_esperado) {
                         Ok(true) => {
@@ -186,7 +182,6 @@ impl ModelDownloader {
                                 def.nombre_archivo
                             );
                             let _ = fs::remove_file(&destino);
-                            // Cae al bloque de descarga abajo
                         }
                         Err(e) => {
                             log::warn!(
@@ -194,12 +189,10 @@ impl ModelDownloader {
                                 def.nombre_archivo,
                                 e
                             );
-                            // Asumir corrupto y re-descargar
                             let _ = fs::remove_file(&destino);
                         }
                     }
                 } else {
-                    // Sin checksum definido: asumir que el archivo existente es valido.
                     continue;
                 }
             }
@@ -355,7 +348,6 @@ impl ModelDownloader {
 
         archivo.flush()?;
 
-        // Reporte final con el total exacto
         if let Some(cb) = on_bytes {
             cb(bytes_escritos, bytes_escritos);
         }

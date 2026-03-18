@@ -284,11 +284,6 @@ mod tests {
 
     #[test]
     fn test_iou_overlap_parcial() {
-        // Caja A: [0,0] a [100,100], area = 10000
-        // Caja B: [50,50] a [150,150], area = 10000
-        // Interseccion: [50,50] a [100,100] = 50*50 = 2500
-        // Union: 10000 + 10000 - 2500 = 17500
-        // IoU = 2500/17500 ~ 0.1428
         let a = crear_deteccion(0.0, 0.0, 100.0, 100.0, 0.9, 0);
         let b = crear_deteccion(50.0, 50.0, 100.0, 100.0, 0.8, 0);
         let iou = calcular_iou(&a, &b);
@@ -302,20 +297,15 @@ mod tests {
     #[test]
     fn test_nms_elimina_duplicados() {
         let detecciones = vec![
-            // Deteccion alta confianza
             crear_deteccion(10.0, 10.0, 100.0, 100.0, 0.95, 1),
-            // Casi identica, menor confianza -> debe suprimirse (IoU 1.0 > 0.45)
             crear_deteccion(10.0, 10.0, 100.0, 100.0, 0.80, 1),
-            // Diferente ubicacion, misma clase -> debe mantenerse
             crear_deteccion(300.0, 300.0, 100.0, 100.0, 0.70, 1),
-            // Misma ubicacion pero diferente clase -> debe mantenerse
             crear_deteccion(10.0, 10.0, 100.0, 100.0, 0.85, 2),
         ];
 
         let resultado = aplicar_nms(detecciones, 0.45);
 
         assert_eq!(resultado.len(), 3, "NMS debe eliminar 1 de 4 detecciones");
-        // La de mayor confianza (0.95) debe ser la primera
         assert!((resultado[0].confianza - 0.95).abs() < 0.001);
     }
 
@@ -337,12 +327,6 @@ mod tests {
 
     #[test]
     fn test_iou_caja_contenida() {
-        // B completamente dentro de A
-        // A: [0,0] a [200,200], area = 40000
-        // B: [50,50] a [100,100], area = 2500
-        // Interseccion = 2500
-        // Union = 40000 + 2500 - 2500 = 40000
-        // IoU = 2500/40000 = 0.0625
         let a = crear_deteccion(0.0, 0.0, 200.0, 200.0, 0.9, 0);
         let b = crear_deteccion(50.0, 50.0, 50.0, 50.0, 0.8, 0);
         let iou = calcular_iou(&a, &b);

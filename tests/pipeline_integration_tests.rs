@@ -1,21 +1,10 @@
-//! Tests de integracion del pipeline OCR completo sin modelos ONNX.
-//!
-//! Usan `StubDocumentParser` y `StubOcrEngine` para verificar el flujo
-//! del pipeline sin dependencias externas. Se ejecutan en CI sin descargas.
-//!
-//! Ejecutar: `cargo test --test pipeline_integration_tests`
-
 use ocrfast::application::pipeline::{OcrPipeline, PipelineEvent};
-use ocrfast::domain::{Document, ProcessingProfile};
 use ocrfast::domain::errors::OcrError;
+use ocrfast::domain::{Document, ProcessingProfile};
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
 use ocrfast::interfaces::ports::{OcrEnginePort, PostprocessorPort};
 use std::path::Path;
 use std::sync::{mpsc, Arc};
-
-// ---------------------------------------------------------------------------
-// Stub OCR Engine para tests: simula reconocimiento de texto sin ONNX.
-// ---------------------------------------------------------------------------
 
 struct StubOcrEngine;
 
@@ -25,7 +14,6 @@ impl OcrEnginePort for StubOcrEngine {
         document: &mut Document,
         _profile: &ProcessingProfile,
     ) -> Result<(), OcrError> {
-        // Rellenar contenido de todos los bloques con texto simulado
         for pagina in &mut document.pages {
             for (i, bloque) in pagina.blocks.iter_mut().enumerate() {
                 bloque.content = format!("Texto OCR simulado bloque {}", i + 1);
@@ -40,17 +28,15 @@ impl OcrEnginePort for StubOcrEngine {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Postprocessor stub que registra si fue llamado.
-// ---------------------------------------------------------------------------
-
 struct PostprocesadorRegistrador {
     llamado: std::sync::Mutex<bool>,
 }
 
 impl PostprocesadorRegistrador {
     fn new() -> Self {
-        Self { llamado: std::sync::Mutex::new(false) }
+        Self {
+            llamado: std::sync::Mutex::new(false),
+        }
     }
 
     fn fue_llamado(&self) -> bool {
@@ -65,10 +51,6 @@ impl PostprocessorPort for PostprocesadorRegistrador {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests de integracion
-// ---------------------------------------------------------------------------
-
 /// Verifica el flujo completo del pipeline con stubs: parseo → OCR → resultado.
 ///
 /// No requiere modelos ONNX ni archivos reales. StubDocumentParser genera
@@ -80,7 +62,6 @@ fn test_pipeline_completo_con_stubs() {
 
     let pipeline = OcrPipeline::new(parser, ocr);
 
-    // StubDocumentParser acepta cualquier ruta; la extension .pdf activa el Parser
     let ruta = Path::new("/tmp/documento_test.pdf");
     let resultado = pipeline.procesar_documento(ruta, &ProcessingProfile::Balanced, None, None);
 
@@ -91,9 +72,11 @@ fn test_pipeline_completo_con_stubs() {
     );
 
     let doc = resultado.unwrap();
-    assert!(!doc.pages.is_empty(), "El documento debe tener al menos 1 pagina");
+    assert!(
+        !doc.pages.is_empty(),
+        "El documento debe tener al menos 1 pagina"
+    );
 
-    // Verificar que OCR rellenó el contenido de los bloques
     let bloques_con_contenido: usize = doc
         .pages
         .iter()
@@ -128,11 +111,12 @@ fn test_pipeline_emite_eventos_de_fase() {
         .procesar_documento(ruta, &ProcessingProfile::Fast, Some(&tx), None)
         .expect("Pipeline debe completarse");
 
-    // El documento se retorna directamente por valor de retorno, no por canal
-    assert!(!documento.pages.is_empty(), "El documento retornado debe tener paginas");
+    assert!(
+        !documento.pages.is_empty(),
+        "El documento retornado debe tener paginas"
+    );
 
-    // Recoger todos los eventos emitidos
-    drop(tx); // cerrar el sender para que rx.iter() termine
+    drop(tx);
     let eventos: Vec<PipelineEvent> = rx.iter().collect();
 
     assert!(
@@ -140,15 +124,22 @@ fn test_pipeline_emite_eventos_de_fase() {
         "El pipeline debe emitir al menos un evento PipelineEvent"
     );
 
-    // Debe contener al menos un evento FaseCambiada
-    let hay_fases = eventos.iter().any(|e| matches!(e, PipelineEvent::FaseCambiada { .. }));
-    assert!(hay_fases, "Debe haberse emitido al menos un evento FaseCambiada");
+    let hay_fases = eventos
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::FaseCambiada { .. }));
+    assert!(
+        hay_fases,
+        "Debe haberse emitido al menos un evento FaseCambiada"
+    );
 
-    // El pipeline NO debe emitir PipelineEvent::Completado: es responsabilidad del caller
-    let hay_completado = eventos.iter().any(|e| matches!(e, PipelineEvent::Completado(_)));
-    assert!(!hay_completado, "El pipeline no debe emitir Completado internamente; es responsabilidad del caller");
+    let hay_completado = eventos
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::Completado(_)));
+    assert!(
+        !hay_completado,
+        "El pipeline no debe emitir Completado internamente; es responsabilidad del caller"
+    );
 
-    // El ultimo evento emitido por el pipeline debe ser FaseCambiada con progreso 1.0
     let ultimo = eventos.last().expect("Debe existir al menos un evento");
     assert!(
         matches!(ultimo, PipelineEvent::FaseCambiada { progreso, .. } if (*progreso - 1.0_f32).abs() < f32::EPSILON),
@@ -165,8 +156,7 @@ fn test_pipeline_invoca_postprocesador() {
     let postprocesador = Arc::new(PostprocesadorRegistrador::new());
     let postprocesador_ref = Arc::clone(&postprocesador);
 
-    let pipeline = OcrPipeline::new(parser, ocr)
-        .with_postprocessor(postprocesador);
+    let pipeline = OcrPipeline::new(parser, ocr).with_postprocessor(postprocesador);
 
     let ruta = Path::new("/tmp/doc_postproc.pdf");
     pipeline

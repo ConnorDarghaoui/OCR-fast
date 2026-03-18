@@ -19,11 +19,8 @@ use ratatui::{
 /// El frame se compone con layouts deterministas y sin asignaciones de gran
 /// volumen por tick, manteniendo estable el coste del redraw.
 pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
-    // Determinar si hay mensaje flash activo y/o motor degradado (stub)
     let hay_flash = aplicacion.obtener_estado().is_some();
     let motor_degradado = aplicacion.motor_fallido;
-
-    // Calcular altura dinamica: +1 linea si hay advertencia de motor degradado
     let alto_banner_motor: u16 = if motor_degradado { 1 } else { 0 };
 
     let mut constraints = vec![
@@ -41,16 +38,13 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
         .constraints(constraints)
         .split(marco.area());
 
-    // Indices dinamicos segun flags
     let idx_banner_motor = 1usize;
     let idx_centro = 2usize;
     let idx_flash = if hay_flash { Some(3usize) } else { None };
     let idx_logs = if hay_flash { 4usize } else { 3usize };
 
-    // Encabezado con pestanas
     renderizar_pestanas_encabezado(marco, aplicacion, layout_principal[0]);
 
-    // Banner de motor degradado (si aplica)
     if motor_degradado {
         let barra = Paragraph::new(Span::styled(
             "  ADVERTENCIA: Motor ONNX no disponible. Resultados FICTICIOS (modo demostración). \
@@ -63,7 +57,6 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
         marco.render_widget(barra, layout_principal[idx_banner_motor]);
     }
 
-    // Centro (Barra lateral + Contenido)
     let layout_central = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -83,7 +76,6 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
         ViewMode::Help => renderizar_ayuda(marco, layout_central[1]),
     }
 
-    // Barra de estado flash (si existe)
     if let Some(flash_idx) = idx_flash {
         if let Some(msg) = aplicacion.obtener_estado() {
             let es_error = msg.starts_with("Error") || msg.starts_with("ERROR");
@@ -99,15 +91,12 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
         }
     }
 
-    // Panel de registros
     renderizar_panel_registros(marco, aplicacion, layout_principal[idx_logs]);
 
-    // Dialogo modal si esta editando
     if aplicacion.modo_entrada == InputMode::Editing {
         renderizar_dialogo_entrada(marco, aplicacion);
     }
 
-    // Popup de seleccion de formato (tiene prioridad visual sobre el dialogo de entrada)
     if aplicacion.seleccionando_formato {
         renderizar_popup_formato(marco, aplicacion);
     }
@@ -357,10 +346,6 @@ fn renderizar_detalle_trabajo_enmarcado(
             items_bloques.push(ListItem::new("Sin contenido extraido"));
         }
     }
-
-    // Aplicar scroll si es necesario (simple slice handling para esta demo, o usar List state si fuera persistente)
-    // Para simplificar y dado que List se maneja con ListState, aqui renderizamos todo pero permitimos que el widget corte.
-    // Para scroll real necesitariamos pasar un ListState mutable. Por ahora usamos app.scroll_detalle como offset manual.
 
     let saltar = aplicacion.scroll_detalle as usize;
     let items_visibles: Vec<ListItem> = items_bloques.into_iter().skip(saltar).collect();

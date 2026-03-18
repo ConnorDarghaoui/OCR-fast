@@ -253,7 +253,6 @@ impl TableStructure {
             let celdas: Vec<String> = fila.iter().map(|c| c.content.clone()).collect();
             resultado.push_str(&format!("| {} |\n", celdas.join(" | ")));
 
-            // Separador despues del header
             if i == 0 {
                 let separadores: Vec<String> = fila.iter().map(|_| "---".to_string()).collect();
                 resultado.push_str(&format!("| {} |\n", separadores.join(" | ")));

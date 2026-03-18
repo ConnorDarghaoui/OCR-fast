@@ -1,12 +1,3 @@
-//! Tests de integracion del pipeline ONNX completo.
-//!
-//! Estos tests requieren que los modelos ONNX esten descargados
-//! en ~/.local/share/ocrfast/models/. Estan marcados con #[ignore]
-//! para no bloquear `cargo test` regular.
-//!
-//! Ejecutar: `cargo test -- --ignored`
-//! O especifico: `cargo test onnx_integration -- --ignored`
-
 #[cfg(test)]
 mod tests {
     use image::{DynamicImage, RgbImage};
@@ -17,29 +8,24 @@ mod tests {
     fn generar_imagen_con_texto_simulado() -> DynamicImage {
         let mut img = RgbImage::new(800, 600);
 
-        // Fondo blanco
         for pixel in img.pixels_mut() {
             *pixel = image::Rgb([255, 255, 255]);
         }
 
-        // Rectangulo negro simulando titulo (parte superior)
         for y in 50..80 {
             for x in 100..500 {
                 img.put_pixel(x, y, image::Rgb([0, 0, 0]));
             }
         }
 
-        // Rectangulo negro mas grande simulando parrafo
         for y in 120..250 {
             for x in 50..750 {
-                // Lineas horizontales simulando texto
                 if y % 15 < 8 {
                     img.put_pixel(x, y, image::Rgb([30, 30, 30]));
                 }
             }
         }
 
-        // Rectangulo gris simulando imagen/figura
         for y in 300..500 {
             for x in 200..600 {
                 img.put_pixel(x, y, image::Rgb([128, 128, 128]));
@@ -62,7 +48,6 @@ mod tests {
         let downloader = resultado.unwrap();
         let faltantes = downloader.modelos_faltantes();
 
-        // Este test siempre pasa; solo reporta estado
         if faltantes.is_empty() {
             eprintln!("Todos los modelos disponibles");
         } else {
@@ -81,14 +66,12 @@ mod tests {
         use ocrfast::infrastructure::ocr_engines::onnx::OnnxOcrEngine;
         use ocrfast::interfaces::ports::{DocumentParserPort, OcrEnginePort};
 
-        // 1. Guardar imagen de prueba
         let dir_temp = std::env::temp_dir().join("ocrfast_e2e_test");
         std::fs::create_dir_all(&dir_temp).unwrap();
         let ruta_imagen = dir_temp.join("test_e2e.png");
         let imagen = generar_imagen_con_texto_simulado();
         imagen.save(&ruta_imagen).unwrap();
 
-        // 2. Parsear documento
         let parser = ImageDocumentParser::new();
         let mut documento = parser
             .parse(&ruta_imagen)
@@ -97,11 +80,9 @@ mod tests {
         assert_eq!(documento.pages.len(), 1);
         assert!(documento.pages[0].image_data.is_some());
 
-        // 3. Inicializar motor ONNX (descarga modelos si es necesario)
-        let engine = OnnxOcrEngine::new()
-            .expect("OnnxOcrEngine debe inicializarse (modelos necesarios)");
+        let engine =
+            OnnxOcrEngine::new().expect("OnnxOcrEngine debe inicializarse (modelos necesarios)");
 
-        // 4. Procesar documento
         let resultado = engine.process(&mut documento, &ProcessingProfile::Balanced);
         assert!(
             resultado.is_ok(),
@@ -109,18 +90,14 @@ mod tests {
             resultado.err()
         );
 
-        // 5. Verificar que se detectaron bloques
         let total_bloques: usize = documento.pages.iter().map(|p| p.blocks.len()).sum();
         eprintln!("Total bloques detectados: {}", total_bloques);
 
-        // Con una imagen sintetica, al menos deberia detectar algo
-        // (el rectangulo negro grande deberia ser visible para el detector)
         assert!(
             total_bloques > 0,
             "El pipeline debe detectar al menos 1 bloque en la imagen de prueba"
         );
 
-        // 6. Verificar tipos de bloques
         for pagina in &documento.pages {
             for bloque in &pagina.blocks {
                 eprintln!(
@@ -130,7 +107,6 @@ mod tests {
             }
         }
 
-        // Limpiar
         let _ = std::fs::remove_dir_all(&dir_temp);
     }
 
@@ -138,9 +114,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_layout_con_imagen_sintetica() {
+        use ocrfast::domain::{Dimensions, Page};
         use ocrfast::infrastructure::ocr_engines::onnx::OnnxOcrEngine;
         use ocrfast::interfaces::ports::LayoutEnginePort;
-        use ocrfast::domain::{Dimensions, Page};
 
         let imagen = generar_imagen_con_texto_simulado();
         let mut datos_imagen = Vec::new();
@@ -161,11 +137,14 @@ mod tests {
             image_data: Some(datos_imagen),
         };
 
-        let engine = OnnxOcrEngine::new()
-            .expect("OnnxOcrEngine debe inicializarse");
+        let engine = OnnxOcrEngine::new().expect("OnnxOcrEngine debe inicializarse");
 
         let bloques = engine.analyze(&pagina);
-        assert!(bloques.is_ok(), "Layout analysis debe ejecutarse: {:?}", bloques.err());
+        assert!(
+            bloques.is_ok(),
+            "Layout analysis debe ejecutarse: {:?}",
+            bloques.err()
+        );
 
         let bloques = bloques.unwrap();
         eprintln!("Layout detecto {} bloques", bloques.len());
@@ -187,8 +166,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_descarga_modelos_completa() {
-        let downloader = ModelDownloader::new()
-            .expect("ModelDownloader debe instanciarse");
+        let downloader = ModelDownloader::new().expect("ModelDownloader debe instanciarse");
 
         let resultado = downloader.asegurar_todos_los_modelos(None, None);
         assert!(

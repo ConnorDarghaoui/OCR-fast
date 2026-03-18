@@ -25,23 +25,16 @@ pub fn decodificar_ctc(
     diccionario: &[String],
 ) -> String {
     let mut resultado = String::new();
-    let mut indice_anterior: usize = 0; // 0 = blank token
+    let mut indice_anterior: usize = 0;
 
-    // Iterar sobre cada timestep
     for chunk in predicciones.chunks(tamano_vocabulario) {
-        // Encontrar el indice con mayor probabilidad (argmax)
         let (indice_maximo, _puntuacion) = chunk
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or((0, &0.0));
 
-        // Reglas CTC:
-        // - Ignorar blank tokens (indice 0)
-        // - Ignorar repeticiones consecutivas
         if indice_maximo != 0 && indice_maximo != indice_anterior {
-            // Los indices del diccionario estan desplazados en 1
-            // (indice 0 = blank, indice 1 = primer caracter)
             let indice_dict = indice_maximo - 1;
 
             if indice_dict < diccionario.len() {
@@ -71,7 +64,6 @@ pub fn decodificar_ctc_con_confianza(
     let mut conteo_caracteres = 0u32;
 
     for chunk in predicciones.chunks(tamano_vocabulario) {
-        // Softmax para obtener probabilidades normalizadas
         let max_val = chunk.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exp_sum: f32 = chunk.iter().map(|&x| (x - max_val).exp()).sum();
 
@@ -118,16 +110,9 @@ mod tests {
             "a".to_string(),
         ];
 
-        // Simular salida del modelo: 5 clases (blank + 4 chars), 6 timesteps
-        // Secuencia esperada: blank, h, o, l, a, blank -> "hola"
         let predicciones = vec![
-            // timestep 0: blank (indice 0)
-            1.0, 0.0, 0.0, 0.0, 0.0, // timestep 1: h (indice 1)
-            0.0, 1.0, 0.0, 0.0, 0.0, // timestep 2: o (indice 2)
-            0.0, 0.0, 1.0, 0.0, 0.0, // timestep 3: l (indice 3)
-            0.0, 0.0, 0.0, 1.0, 0.0, // timestep 4: a (indice 4)
-            0.0, 0.0, 0.0, 0.0, 1.0, // timestep 5: blank
-            1.0, 0.0, 0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0,
         ];
 
         let resultado = decodificar_ctc(&predicciones, 5, &diccionario);
@@ -143,14 +128,9 @@ mod tests {
             "a".to_string(),
         ];
 
-        // Con repeticiones: h, h, o, o, l, a -> "hola" (elimina repetidos)
         let predicciones = vec![
-            0.0, 1.0, 0.0, 0.0, 0.0, // h
-            0.0, 1.0, 0.0, 0.0, 0.0, // h (repetido, ignorado)
-            0.0, 0.0, 1.0, 0.0, 0.0, // o
-            0.0, 0.0, 1.0, 0.0, 0.0, // o (repetido, ignorado)
-            0.0, 0.0, 0.0, 1.0, 0.0, // l
-            0.0, 0.0, 0.0, 0.0, 1.0, // a
+            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
 
         let resultado = decodificar_ctc(&predicciones, 5, &diccionario);

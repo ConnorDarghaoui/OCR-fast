@@ -1,8 +1,9 @@
 use image::{DynamicImage, GenericImageView};
 use ndarray::Array4;
 
-// Normalizacion ImageNet (orientation, deteccion, tablas)
+/// Media ImageNet usada por los modelos que esperan normalización clásica.
 const MEAN_IMAGENET: [f32; 3] = [0.485, 0.456, 0.406];
+/// Desviación estándar ImageNet usada por orientación, detección y tablas.
 const STD_IMAGENET: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Escribe los bytes RGB de una imagen redimensionada en un tensor CHW.
@@ -73,7 +74,6 @@ pub fn preparar_para_layout(imagen: &DynamicImage) -> (Array4<f32>, f32, f32) {
     );
     let bytes = img.to_rgb8();
 
-    // Padding YOLO: gris 114/255
     let valor_padding = 114.0f32 / 255.0;
     let mut tensor = Array4::from_elem((1, 3, DIM, DIM), valor_padding);
 

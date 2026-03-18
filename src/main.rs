@@ -5,6 +5,11 @@ use ocrfast::infrastructure::ocr_engines::stub::StubOcrEngine;
 use ocrfast::interfaces::ports::{DocumentParserPort, JobStorePort, OcrEnginePort};
 use std::sync::Arc;
 
+/// Inicializa logging dual a stderr y archivo local.
+///
+/// La ruta persiste en el directorio de datos del usuario para desacoplar la
+/// observabilidad del directorio actual. Si el archivo no puede abrirse, la
+/// aplicación sigue operativa y conserva visibilidad mínima por stderr.
 fn configurar_logging() {
     let ruta_log = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -33,11 +38,15 @@ fn configurar_logging() {
         .apply();
 
     if let Err(e) = resultado_log {
-        // No se puede usar log:: aqui porque el logger no esta configurado.
         eprintln!("[ADVERTENCIA] No se pudo inicializar el sistema de logging: {}. Los logs solo iran a stderr.", e);
     }
 }
 
+/// Arranca la TUI con dependencias locales y fallback progresivo.
+///
+/// El proceso inicia siempre sobre un motor stub para entregar el primer frame
+/// sin esperar carga de modelos ni probing de aceleradores. El backend ONNX se
+/// incorpora después en segundo plano, salvo que el caller fuerce `--stub`.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     configurar_logging();
 
@@ -51,9 +60,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use ocrfast::infrastructure::document_parsers::image_parser::ImageDocumentParser;
         Arc::new(ImageDocumentParser::new())
     };
-
-    // Iniciamos siempre con StubOcrEngine para que la UI sea instantanea.
-    // Si no se solicita --stub, el motor ONNX real se carga en segundo plano.
     let ocr_engine: Arc<dyn OcrEnginePort> = Arc::new(StubOcrEngine::new());
 
     let job_store: Arc<dyn JobStorePort> = match FileJobStore::new() {

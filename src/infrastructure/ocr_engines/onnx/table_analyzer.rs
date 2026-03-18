@@ -105,8 +105,6 @@ impl TableAnalyzer {
                 }
             }
 
-            // Softmax sobre los logits de esta query (no sigmoid, que es incorrecto
-            // para clasificacion multiclase como DETR)
             let max_logit = (0..num_clases)
                 .map(|c| datos_logits[q * num_clases_total + c])
                 .fold(f32::NEG_INFINITY, f32::max);

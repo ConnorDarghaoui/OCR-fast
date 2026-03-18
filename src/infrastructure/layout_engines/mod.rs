@@ -144,11 +144,9 @@ impl LayoutEnginePort for XyCutLayoutEngine {
 
         let (ancho, alto) = img.dimensions();
 
-        // Umbral adaptativo: fila/columna con menos del 0.5% de pixeles oscuros = vacia
         let umbral_h = ((ancho as f32 * 0.005) as u32).max(1);
         let umbral_v = ((alto as f32 * 0.005) as u32).max(1);
 
-        // Proyeccion horizontal y gaps entre bloques de texto
         let h_proj = self.proyeccion_horizontal(&img);
         let h_gaps = self.find_gaps(&h_proj, umbral_h);
         let regiones_y = self.gaps_a_regiones(&h_gaps, 0, alto as usize);
@@ -161,7 +159,6 @@ impl LayoutEnginePort for XyCutLayoutEngine {
                 continue;
             }
 
-            // Proyeccion vertical sobre esta franja horizontal
             let v_proj_region: Vec<u32> = (0..ancho)
                 .map(|x| {
                     (*y_ini as u32..*y_fin as u32)

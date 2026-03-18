@@ -41,12 +41,16 @@ pub fn ejecutar_bucle_eventos<B: Backend>(
     Ok(())
 }
 
+/// Enruta una pulsación según el modo de entrada activo.
+///
+/// La selección de formato se trata como modal duro para preservar consistencia:
+/// mientras el popup está visible, no se permite que atajos globales muten el
+/// resto del estado de la TUI.
 fn manejar_evento_tecla(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<(), io::Error> {
     if tecla.kind != KeyEventKind::Press {
         return Ok(());
     }
 
-    // Prioridad: seleccion de formato (modal)
     if aplicacion.seleccionando_formato {
         return manejar_seleccion_formato(tecla, aplicacion);
     }
@@ -57,6 +61,7 @@ fn manejar_evento_tecla(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<()
     }
 }
 
+/// Opera el popup modal de formato de salida.
 fn manejar_seleccion_formato(tecla: KeyEvent, app: &mut AppState) -> Result<(), io::Error> {
     match tecla.code {
         KeyCode::Down | KeyCode::Char('j') => {
@@ -81,8 +86,8 @@ fn manejar_seleccion_formato(tecla: KeyEvent, app: &mut AppState) -> Result<(), 
     Ok(())
 }
 
+/// Gestiona atajos cuando la TUI no está capturando texto libre.
 fn manejar_modo_normal(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<(), io::Error> {
-    // Tecla de ayuda global (disponible desde cualquier vista excepto edicion)
     if tecla.code == KeyCode::Char('?') && aplicacion.vista_actual != ViewMode::Help {
         aplicacion.cambiar_vista(ViewMode::Help);
         return Ok(());
@@ -152,6 +157,7 @@ fn manejar_modo_normal(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<(),
     Ok(())
 }
 
+/// Gestiona edición de rutas y otros campos de entrada lineal.
 fn manejar_modo_edicion(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<(), io::Error> {
     match tecla.code {
         KeyCode::Enter => {
@@ -171,6 +177,7 @@ fn manejar_modo_edicion(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<()
     Ok(())
 }
 
+/// Mapea eventos de ratón a navegación contextual de listas y detalle.
 fn manejar_evento_raton(
     raton: crossterm::event::MouseEvent,
     aplicacion: &mut AppState,

@@ -82,17 +82,14 @@ impl ImagePreprocessor {
 
         let (ancho, alto) = img.dimensions();
 
-        // Histograma de 256 niveles
         let mut histograma = [0u32; 256];
         for pixel in img.pixels() {
             histograma[pixel[0] as usize] += 1;
         }
 
-        // Suma total ponderada de intensidades
         let total_pixeles = (ancho * alto) as f64;
         let suma_total: f64 = (0..256usize).map(|i| i as f64 * histograma[i] as f64).sum();
 
-        // Metodo de Otsu: maximizar varianza inter-clase
         let mut mejor_umbral = 128u8;
         let mut mejor_varianza = 0f64;
         let mut peso_fondo = 0f64;
@@ -120,7 +117,6 @@ impl ImagePreprocessor {
             }
         }
 
-        // Aplicar umbral binario
         let mut binarizada = image::GrayImage::new(ancho, alto);
         for (x, y, pixel) in img.enumerate_pixels() {
             let valor = if pixel[0] >= mejor_umbral { 255u8 } else { 0u8 };
@@ -148,7 +144,6 @@ impl ImagePreprocessor {
 
         let (ancho_orig, alto_orig) = img_original.dimensions();
 
-        // Reducir para busqueda de angulo eficiente
         const ANCHO_BUSQUEDA: u32 = 500;
         let img_pequena = if ancho_orig > ANCHO_BUSQUEDA {
             let alto_escala = (alto_orig as f64 * ANCHO_BUSQUEDA as f64 / ancho_orig as f64) as u32;
@@ -162,7 +157,6 @@ impl ImagePreprocessor {
             img_original.clone()
         };
 
-        // Busqueda gruesa: -10 a +10 grados en pasos de 1.0
         let mut mejor_angulo = 0.0f64;
         let mut mejor_varianza = varianza_proyeccion_h(&img_pequena);
 
@@ -176,7 +170,6 @@ impl ImagePreprocessor {
             }
         }
 
-        // Busqueda fina: ±1.0 grado alrededor del mejor angulo en pasos de 0.2
         let inicio_fino = (mejor_angulo - 1.0).max(-15.0);
         let fin_fino = (mejor_angulo + 1.0).min(15.0);
         let mut angulo_fino = inicio_fino;
@@ -190,7 +183,6 @@ impl ImagePreprocessor {
             angulo_fino += 0.2;
         }
 
-        // Tolerancia: no corregir si el angulo es menor a 0.2 grados
         if mejor_angulo.abs() < 0.2 {
             log::debug!(
                 "Deskew: angulo {:.2}° dentro de tolerancia, sin correccion",
@@ -201,7 +193,6 @@ impl ImagePreprocessor {
 
         log::debug!("Deskew: corrigiendo {:.2}°", mejor_angulo);
 
-        // Aplicar rotacion correctiva sobre la imagen a resolucion completa
         let corregida = rotar_imagen_gris(&img_original, mejor_angulo.to_radians());
 
         let mut buffer = std::io::Cursor::new(Vec::new());
@@ -232,7 +223,6 @@ fn rotar_imagen_gris(img: &image::GrayImage, angulo_rad: f64) -> image::GrayImag
             let dx = x as f64 - cx;
             let dy = y as f64 - cy;
 
-            // Mapeo inverso: coordenadas en la imagen original
             let ox = (dx * cos_a + dy * sin_a + cx).round() as i64;
             let oy = (-dx * sin_a + dy * cos_a + cy).round() as i64;
 
@@ -288,7 +278,6 @@ impl PreprocessorPort for ImagePreprocessor {
             if let Some(ref mut image_data) = page.image_data {
                 log::debug!("Preprocesando pagina {}", page.number);
 
-                // Orden: denoise primero (imagen original), luego binarizar, luego deskew
                 if self.apply_denoise {
                     self.denoise(image_data)?;
                 }

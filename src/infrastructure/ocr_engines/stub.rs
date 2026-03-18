@@ -24,7 +24,6 @@ impl OcrEnginePort for StubOcrEngine {
     ) -> Result<(), OcrError> {
         log::info!("StubOcrEngine: procesando con perfil {:?}", profile);
 
-        // Simular procesamiento
         for page in &mut document.pages {
             for block in &mut page.blocks {
                 block.content = match block.block_type {
