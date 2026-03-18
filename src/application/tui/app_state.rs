@@ -1,6 +1,8 @@
 use crate::application::pipeline::{OcrPipeline, PipelineEvent, MSG_JOB_CANCELADO};
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
-use crate::infrastructure::exporters::{JsonExporter, MarkdownExporter, PdfSandwichExporter};
+use crate::infrastructure::exporters::{
+    DocxExporter, JsonExporter, LatexExporter, PdfSandwichExporter, TxtExporter,
+};
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
 use crate::infrastructure::postprocessors::TextPostprocessor;
 use crate::interfaces::ports::{DocumentParserPort, ExporterPort, JobStorePort, OcrEnginePort};
@@ -780,67 +782,51 @@ impl AppState {
         self.loguear(format!("Trabajo {} eliminado", &id_trabajo[..8]));
     }
 
-    /// Exporta el trabajo seleccionado a Markdown.
-    pub fn exportar_trabajo_markdown(&mut self) {
-        let trabajo = match self.obtener_trabajo_seleccionado() {
-            Some(j) => j.clone(),
-            None => return,
-        };
+    /// Exporta el trabajo seleccionado a texto plano.
+    pub fn exportar_trabajo_txt(&mut self) {
+        self.exportar_trabajo_seleccionado(TxtExporter::new(), "TXT", "txt");
+    }
 
-        let ruta_base = trabajo.document.source_path.with_extension("md");
-        let exportador = MarkdownExporter::new();
+    /// Exporta el trabajo seleccionado a DOCX.
+    pub fn exportar_trabajo_docx(&mut self) {
+        self.exportar_trabajo_seleccionado(DocxExporter::new(), "DOCX", "docx");
+    }
 
-        match exportador.export(&trabajo, &ruta_base) {
-            Ok(_) => {
-                self.loguear(format!("Exportado MD: {}", ruta_base.display()));
-                self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
-            }
-            Err(e) => {
-                self.loguear(format!("Error exportacion MD: {}", e));
-                self.mostrar_estado(format!("Error exportacion: {}", e));
-            }
-        }
+    /// Exporta el trabajo seleccionado a LaTeX.
+    pub fn exportar_trabajo_latex(&mut self) {
+        self.exportar_trabajo_seleccionado(LatexExporter::new(), "LaTeX", "tex");
     }
 
     /// Exporta el trabajo seleccionado a JSON.
     pub fn exportar_trabajo_json(&mut self) {
-        let trabajo = match self.obtener_trabajo_seleccionado() {
-            Some(j) => j.clone(),
-            None => return,
-        };
-
-        let ruta_base = trabajo.document.source_path.with_extension("json");
-        let exportador = JsonExporter::new();
-
-        match exportador.export(&trabajo, &ruta_base) {
-            Ok(_) => {
-                self.loguear(format!("Exportado JSON: {}", ruta_base.display()));
-                self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
-            }
-            Err(e) => {
-                self.loguear(format!("Error exportacion JSON: {}", e));
-                self.mostrar_estado(format!("Error exportacion: {}", e));
-            }
-        }
+        self.exportar_trabajo_seleccionado(JsonExporter::new(), "JSON", "json");
     }
 
     /// Exporta el trabajo seleccionado a PDF sandwich.
     pub fn exportar_trabajo_pdf(&mut self) {
+        self.exportar_trabajo_seleccionado(PdfSandwichExporter::new(), "PDF", "pdf");
+    }
+
+    fn exportar_trabajo_seleccionado<E: ExporterPort>(
+        &mut self,
+        exportador: E,
+        etiqueta: &str,
+        extension: &str,
+    ) {
         let trabajo = match self.obtener_trabajo_seleccionado() {
             Some(j) => j.clone(),
             None => return,
         };
 
-        let ruta_base = trabajo.document.source_path.with_extension("pdf");
-        let exportador = PdfSandwichExporter::new();
+        let ruta_base = trabajo.document.source_path.with_extension(extension);
 
         match exportador.export(&trabajo, &ruta_base) {
             Ok(_) => {
-                self.loguear(format!("Exportado PDF: {}", ruta_base.display()));
+                self.loguear(format!("Exportado {etiqueta}: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
             }
             Err(e) => {
-                self.loguear(format!("Error exportacion PDF: {}", e));
+                self.loguear(format!("Error exportacion {etiqueta}: {}", e));
                 self.mostrar_estado(format!("Error exportacion: {}", e));
             }
         }
@@ -934,9 +920,9 @@ fn exportar_segun_formato(
     ruta: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match job.formato_salida {
-        OutputFormat::Markdown => MarkdownExporter::new()
-            .export(job, ruta)
-            .map_err(|e| e.into()),
+        OutputFormat::Txt => TxtExporter::new().export(job, ruta).map_err(|e| e.into()),
+        OutputFormat::Docx => DocxExporter::new().export(job, ruta).map_err(|e| e.into()),
+        OutputFormat::Latex => LatexExporter::new().export(job, ruta).map_err(|e| e.into()),
         OutputFormat::Pdf => PdfSandwichExporter::new()
             .export(job, ruta)
             .map_err(|e| e.into()),

@@ -1,132 +1,311 @@
 use crate::domain::errors::ExportError;
-use crate::domain::{BlockType, Job};
-use crate::interfaces::ports::ExporterPort;
+use crate::domain::{
+    AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job, Page,
+    Rectangle, TableStructure,
+};
+use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
+use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort};
 use lopdf::dictionary;
 use std::fs;
-use std::path::Path;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 
 /// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
 
-/// Exportador de documentos OCR a Markdown legible por humanos.
-///
-/// La implementación prioriza inspección y portabilidad: el resultado puede
-/// abrirse en cualquier editor de texto y es útil para debugging, diffing y
-/// revisión manual del OCR sin depender de herramientas especializadas.
-pub struct MarkdownExporter;
+/// DPI asumido para convertir geometría raster a tamaños tipográficos.
+const DPI_REFERENCIA: f64 = 150.0;
+/// Factor de conversión: 1 punto PDF = 1/72 pulgadas.
+const PUNTOS_POR_PULGADA: f64 = 72.0;
+/// Fracción de alto del bounding box usada como tamaño de fuente PDF.
+const FACTOR_TAMANO_FUENTE: f64 = 0.8;
+/// Tamaño mínimo de fuente PDF.
+const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
+/// Tamaño máximo de fuente PDF.
+const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
+/// Conversión aproximada de punto tipográfico a EMUs en DOCX.
+const EMUS_POR_PUNTO: u64 = 12_700;
 
-impl MarkdownExporter {
-    /// Construye un exportador Markdown sin estado interno.
+/// Exportador de documentos OCR a texto plano legible por humanos.
+pub struct TxtExporter;
+
+impl TxtExporter {
+    /// Construye un exportador TXT sin estado interno.
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for MarkdownExporter {
+impl Default for TxtExporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ExporterPort for MarkdownExporter {
+impl ExporterPort for TxtExporter {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
-        log::info!(
-            "Exportando trabajo {} a Markdown: {:?}",
-            job.id,
-            output_path
-        );
+        asegurar_directorio_padre(output_path)?;
 
-        let mut content = String::new();
-
-        content.push_str(&format!("# Documento: {}\n\n", job.document.id));
-        content.push_str(&format!(
-            "- **Archivo fuente**: {}\n",
+        let mut contenido = String::new();
+        contenido.push_str(&format!("Documento: {}\n", job.document.id));
+        contenido.push_str(&format!(
+            "Archivo fuente: {}\n",
             job.document.source_path.display()
         ));
-        content.push_str(&format!("- **Perfil**: {:?}\n", job.profile));
-        content.push_str(&format!("- **Estado**: {:?}\n\n", job.status));
-        content.push_str("---\n\n");
+        contenido.push_str(&format!("Perfil: {:?}\n", job.profile));
+        contenido.push_str(&format!("Estado: {:?}\n\n", job.status));
 
-        for page in &job.document.pages {
-            content.push_str(&format!("## Pagina {}\n\n", page.number));
+        let blueprint = construir_blueprint(&job.document)?;
 
-            for block in &page.blocks {
-                match block.block_type {
-                    BlockType::Title => {
-                        content.push_str(&format!("### {}\n\n", block.content));
+        for pagina in &blueprint.pages {
+            contenido.push_str(&format!("===== PAGINA {} =====\n\n", pagina.number));
+
+            for elemento in &pagina.elements {
+                match elemento.role {
+                    ElementRole::Title => {
+                        contenido.push_str(&format!("{}\n\n", elemento.text.to_uppercase()));
                     }
-                    BlockType::Text => {
-                        content.push_str(&format!("{}\n\n", block.content));
-                    }
-                    BlockType::Table => {
-                        if let Some(ref estructura) = block.table_structure {
-                            let tabla_md = estructura.to_markdown();
-                            if !tabla_md.is_empty() {
-                                content.push_str(&tabla_md);
-                                content.push('\n');
-                            } else {
-                                content.push_str(&format!("```\n[Tabla vacía]\n```\n\n"));
-                            }
-                        } else if !block.content.is_empty() {
-                            content.push_str(&format!("```\n{}\n```\n\n", block.content));
-                        } else {
-                            content.push_str("```\n[Tabla sin contenido]\n```\n\n");
+                    ElementRole::Paragraph | ElementRole::ListItem => {
+                        if !elemento.text.trim().is_empty() {
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
                         }
                     }
-                    BlockType::Formula => {
-                        content.push_str(&format!("${}$\n\n", block.content));
+                    ElementRole::Table => {
+                        if let Some(ref tabla) = elemento.table {
+                            let tabla_txt = tabla.to_plain_text();
+                            if !tabla_txt.is_empty() {
+                                contenido.push_str(&tabla_txt);
+                                contenido.push('\n');
+                            }
+                        } else if !elemento.text.trim().is_empty() {
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
+                        } else {
+                            contenido.push_str("[Tabla sin contenido]\n\n");
+                        }
                     }
-                    _ => {
-                        content.push_str(&format!(
-                            "<!-- {:?}: {} -->\n\n",
-                            block.block_type, block.content
-                        ));
+                    ElementRole::Formula => {
+                        if !elemento.text.trim().is_empty() {
+                            contenido.push_str("Formula: ");
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
+                        }
+                    }
+                    ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
+                        contenido.push_str("[Activo visual preservado en exportadores ricos]\n\n");
+                    }
+                    ElementRole::Separator | ElementRole::Unknown => {
+                        if !elemento.text.trim().is_empty() {
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
+                        }
                     }
                 }
             }
         }
 
-        fs::write(output_path, content)?;
-        log::info!("Exportacion Markdown completada");
+        fs::write(output_path, contenido)?;
         Ok(())
     }
 
     fn format_name(&self) -> &str {
-        "Markdown"
+        "TXT"
+    }
+}
+
+/// Exportador a DOCX editable guiado por el blueprint visual.
+///
+/// Esta implementación prioriza compatibilidad amplia con Word y una
+/// reconstrucción razonable de títulos, tablas, imágenes y jerarquía visual.
+/// No intenta aún posicionamiento absoluto agresivo; para ese caso, LaTeX y PDF
+/// siguen siendo rutas más fieles visualmente.
+pub struct DocxExporter;
+
+impl DocxExporter {
+    /// Construye un exportador DOCX sin estado interno.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DocxExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExporterPort for DocxExporter {
+    fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
+        asegurar_directorio_padre(output_path)?;
+
+        let blueprint = construir_blueprint(&job.document)?;
+        let mut relaciones_imagen = Vec::new();
+        let mut media = Vec::new();
+        let mut cuerpo = String::new();
+        let mut contador_rel = 1usize;
+        let mut contador_docpr = 1u32;
+
+        for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+            for elemento in &pagina.elements {
+                cuerpo.push_str(&docx_xml_elemento(
+                    job,
+                    pagina,
+                    elemento,
+                    &mut relaciones_imagen,
+                    &mut media,
+                    &mut contador_rel,
+                    &mut contador_docpr,
+                )?);
+            }
+
+            if indice_pagina + 1 < blueprint.pages.len() {
+                cuerpo.push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
+            }
+        }
+
+        let primera_pagina = blueprint
+            .pages
+            .first()
+            .ok_or_else(|| ExportError::SerializationError("Documento sin páginas".to_string()))?;
+        let ancho_twips = pt_a_twips(px_a_pt(primera_pagina.dimensions.width)) as u64;
+        let alto_twips = pt_a_twips(px_a_pt(primera_pagina.dimensions.height)) as u64;
+
+        let document_xml = format!(
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+                "<w:document xmlns:wpc=\"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas\" ",
+                "xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" ",
+                "xmlns:o=\"urn:schemas-microsoft-com:office:office\" ",
+                "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" ",
+                "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\" ",
+                "xmlns:v=\"urn:schemas-microsoft-com:vml\" ",
+                "xmlns:wp14=\"http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing\" ",
+                "xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" ",
+                "xmlns:w10=\"urn:schemas-microsoft-com:office:word\" ",
+                "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" ",
+                "xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" ",
+                "xmlns:wpg=\"http://schemas.microsoft.com/office/word/2010/wordprocessingGroup\" ",
+                "xmlns:wpi=\"http://schemas.microsoft.com/office/word/2010/wordprocessingInk\" ",
+                "xmlns:wne=\"http://schemas.microsoft.com/office/word/2006/wordml\" ",
+                "xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\" ",
+                "mc:Ignorable=\"w14 wp14\">",
+                "<w:body>{}<w:sectPr><w:pgSz w:w=\"{}\" w:h=\"{}\"/>",
+                "<w:pgMar w:top=\"720\" w:right=\"720\" w:bottom=\"720\" w:left=\"720\" ",
+                "w:header=\"0\" w:footer=\"0\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>"
+            ),
+            cuerpo, ancho_twips, alto_twips
+        );
+
+        let document_rels = construir_document_rels(&relaciones_imagen);
+        let content_types = construir_content_types_docx(!media.is_empty());
+        let root_rels = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">",
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>",
+            "</Relationships>"
+        );
+
+        let mut entradas = vec![
+            ZipEntry::new("[Content_Types].xml", content_types.into_bytes()),
+            ZipEntry::new("_rels/.rels", root_rels.as_bytes().to_vec()),
+            ZipEntry::new("word/document.xml", document_xml.into_bytes()),
+            ZipEntry::new("word/_rels/document.xml.rels", document_rels.into_bytes()),
+        ];
+
+        for (nombre, bytes) in media {
+            entradas.push(ZipEntry::new(format!("word/media/{nombre}"), bytes));
+        }
+
+        escribir_zip_sin_compresion(&entradas, output_path)?;
+        Ok(())
+    }
+
+    fn format_name(&self) -> &str {
+        "DOCX"
+    }
+}
+
+/// Exportador LaTeX con posicionamiento guiado por geometría OCR.
+///
+/// La ruta LaTeX prioriza fidelidad visual sobre pureza semántica: usa bloques
+/// absolutos cuando el blueprint indica que la posición importa.
+pub struct LatexExporter;
+
+impl LatexExporter {
+    /// Construye un exportador LaTeX sin estado interno.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for LatexExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExporterPort for LatexExporter {
+    fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
+        asegurar_directorio_padre(output_path)?;
+
+        let blueprint = construir_blueprint(&job.document)?;
+        let primera_pagina = blueprint
+            .pages
+            .first()
+            .ok_or_else(|| ExportError::SerializationError("Documento sin páginas".to_string()))?;
+
+        let directorio_assets = directorio_assets(output_path);
+        fs::create_dir_all(&directorio_assets)?;
+
+        let mut contenido = String::new();
+        contenido.push_str("\\documentclass{article}\n");
+        contenido.push_str(&format!(
+            "\\usepackage[paperwidth={:.2}pt,paperheight={:.2}pt,margin=0pt]{{geometry}}\n",
+            px_a_pt(primera_pagina.dimensions.width),
+            px_a_pt(primera_pagina.dimensions.height)
+        ));
+        contenido.push_str("\\usepackage[absolute,overlay]{textpos}\n");
+        contenido.push_str("\\usepackage{graphicx}\n");
+        contenido.push_str("\\usepackage{array}\n");
+        contenido.push_str("\\usepackage{longtable}\n");
+        contenido.push_str("\\usepackage{ragged2e}\n");
+        contenido.push_str("\\pagestyle{empty}\n");
+        contenido.push_str("\\setlength{\\TPHorizModule}{1pt}\n");
+        contenido.push_str("\\setlength{\\TPVertModule}{1pt}\n");
+        contenido.push_str("\\begin{document}\n");
+        contenido.push_str("\\setlength{\\parindent}{0pt}\n");
+
+        for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+            for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
+                let nombre_asset =
+                    format!("page{}_element{}.png", pagina.number, indice_elemento + 1);
+                contenido.push_str(&latex_elemento(
+                    job,
+                    pagina,
+                    elemento,
+                    &directorio_assets,
+                    &nombre_asset,
+                )?);
+            }
+
+            if indice_pagina + 1 < blueprint.pages.len() {
+                contenido.push_str("\\newpage\n");
+            }
+        }
+
+        contenido.push_str("\\end{document}\n");
+        fs::write(output_path, contenido)?;
+        Ok(())
+    }
+
+    fn format_name(&self) -> &str {
+        "LaTeX"
     }
 }
 
 /// Exportador a PDF sandwich con texto invisible seleccionable.
-///
-/// La estrategia conserva la imagen original como fondo y superpone una capa de
-/// texto OCR en coordenadas PDF. Ese diseño preserva fidelidad visual mientras
-/// habilita búsqueda y selección, que es el comportamiento esperado en flujos de
-/// archivo y revisión documental.
-///
-/// # Trade-offs
-///
-/// Usar `lopdf` directamente reduce abstracciones y dependencia de motores PDF
-/// pesados, pero obliga a controlar manualmente coordenadas y operadores.
 pub struct PdfSandwichExporter;
-
-/// DPI asumido para la conversion pixel -> puntos PDF.
-/// 150 DPI es un valor conservador para documentos escaneados.
-const DPI_REFERENCIA: f64 = 150.0;
-
-/// Factor de conversion: 1 punto PDF = 1/72 pulgadas.
-const PUNTOS_POR_PULGADA: f64 = 72.0;
-
-/// Fraccion de la altura del bounding box usada como tamano de fuente estimado.
-/// 0.8 deja un margen del 20% para evitar que el texto invisible desborde el bloque.
-const FACTOR_TAMANO_FUENTE: f64 = 0.8;
-
-/// Tamano minimo de fuente en puntos PDF para la capa de texto invisible.
-/// Evita fuentes de tamano cero o negativo en bloques de altura despreciable.
-const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
-
-/// Tamano maximo de fuente en puntos PDF para la capa de texto invisible.
-/// Limita bloques de altura exagerada (ej: imagen de pagina completa).
-const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
 
 impl PdfSandwichExporter {
     /// Construye un exportador PDF sandwich sin estado mutable.
@@ -136,7 +315,7 @@ impl PdfSandwichExporter {
 
     /// Convierte pixeles a puntos PDF.
     fn px_a_pt(px: u32) -> f64 {
-        (px as f64) * (PUNTOS_POR_PULGADA / DPI_REFERENCIA)
+        px_a_pt(px)
     }
 }
 
@@ -151,11 +330,7 @@ impl ExporterPort for PdfSandwichExporter {
         use lopdf::content::{Content, Operation};
         use lopdf::{Document, Object};
 
-        log::info!(
-            "Exportando trabajo {} a PDF Sandwich: {:?}",
-            job.id,
-            output_path
-        );
+        asegurar_directorio_padre(output_path)?;
 
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
@@ -254,8 +429,7 @@ impl ExporterPort for PdfSandwichExporter {
                 dictionary! {},
                 content.encode().map_err(|e| {
                     ExportError::SerializationError(format!(
-                        "Error codificando content stream: {}",
-                        e
+                        "Error codificando content stream: {e}"
                     ))
                 })?,
             ));
@@ -294,7 +468,8 @@ impl ExporterPort for PdfSandwichExporter {
             "Kids" => page_ids,
             "Count" => job.document.pages.len() as u32,
         };
-        doc.objects.insert(pages_id, Object::Dictionary(pages));
+        doc.objects
+            .insert(pages_id, lopdf::Object::Dictionary(pages));
 
         let catalog_id = doc.add_object(dictionary! {
             "Type" => "Catalog",
@@ -304,13 +479,8 @@ impl ExporterPort for PdfSandwichExporter {
 
         doc.compress();
         doc.save(output_path)
-            .map_err(|e| ExportError::SerializationError(format!("Error guardando PDF: {}", e)))?;
+            .map_err(|e| ExportError::SerializationError(format!("Error guardando PDF: {e}")))?;
 
-        log::info!(
-            "PDF Sandwich exportado: {} paginas -> {:?}",
-            job.document.pages.len(),
-            output_path
-        );
         Ok(())
     }
 
@@ -321,14 +491,12 @@ impl ExporterPort for PdfSandwichExporter {
 
 impl PdfSandwichExporter {
     /// Decodifica los bytes de imagen y crea un XObject Image en el documento PDF.
-    ///
-    /// Retorna el ObjectId del XObject y el nombre de recurso asignado.
     fn crear_xobject_imagen(
         doc: &mut lopdf::Document,
         datos_imagen: &[u8],
     ) -> Result<(lopdf::ObjectId, String), String> {
         let imagen_dyn =
-            image::load_from_memory(datos_imagen).map_err(|e| format!("Decodificacion: {}", e))?;
+            image::load_from_memory(datos_imagen).map_err(|e| format!("Decodificacion: {e}"))?;
 
         let rgb = imagen_dyn.to_rgb8();
         let (ancho, alto) = rgb.dimensions();
@@ -346,16 +514,11 @@ impl PdfSandwichExporter {
         let img_stream = lopdf::Stream::new(img_dict, pixeles_raw);
         let xobj_id = doc.add_object(img_stream);
 
-        let nombre = format!("Im{}", xobj_id.0);
-
-        Ok((xobj_id, nombre))
+        Ok((xobj_id, format!("Im{}", xobj_id.0)))
     }
 }
 
 /// Exportador a JSON estructurado para integración y depuración.
-///
-/// A diferencia de Markdown o PDF, este formato prioriza preservación completa
-/// de metadatos y estructura para integraciones posteriores o pruebas.
 pub struct JsonExporter;
 
 impl JsonExporter {
@@ -373,17 +536,568 @@ impl Default for JsonExporter {
 
 impl ExporterPort for JsonExporter {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
-        log::info!("Exportando trabajo {} a JSON: {:?}", job.id, output_path);
-
+        asegurar_directorio_padre(output_path)?;
         let json_content = serde_json::to_string_pretty(job)
             .map_err(|e| ExportError::SerializationError(e.to_string()))?;
-
         fs::write(output_path, json_content)?;
-        log::info!("Exportacion JSON completada");
         Ok(())
     }
 
     fn format_name(&self) -> &str {
         "JSON"
     }
+}
+
+fn construir_blueprint(
+    documento: &crate::domain::Document,
+) -> Result<DocumentBlueprint, ExportError> {
+    HighFidelityBlueprintBuilder::new()
+        .build_blueprint(documento)
+        .map_err(|e| {
+            ExportError::SerializationError(format!("No se pudo construir blueprint: {e}"))
+        })
+}
+
+fn asegurar_directorio_padre(ruta: &Path) -> Result<(), ExportError> {
+    if let Some(parent) = ruta.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn directorio_assets(ruta_salida: &Path) -> PathBuf {
+    let stem = ruta_salida
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("documento");
+    ruta_salida.with_file_name(format!("{stem}_assets"))
+}
+
+fn px_a_pt(px: u32) -> f64 {
+    (px as f64) * (PUNTOS_POR_PULGADA / DPI_REFERENCIA)
+}
+
+fn pt_a_twips(pt: f64) -> u32 {
+    (pt * 20.0).round().max(1.0) as u32
+}
+
+fn obtener_pagina<'a>(job: &'a Job, numero_pagina: u32) -> Result<&'a Page, ExportError> {
+    job.document
+        .pages
+        .iter()
+        .find(|pagina| pagina.number == numero_pagina)
+        .ok_or_else(|| {
+            ExportError::SerializationError(format!(
+                "No existe la pagina {numero_pagina} en el documento"
+            ))
+        })
+}
+
+fn recortar_imagen_desde_referencia(
+    job: &Job,
+    numero_pagina: u32,
+    bounding_box: &Rectangle,
+) -> Result<Vec<u8>, ExportError> {
+    let pagina = obtener_pagina(job, numero_pagina)?;
+    let datos = pagina.image_data.as_ref().ok_or_else(|| {
+        ExportError::SerializationError(format!(
+            "La pagina {numero_pagina} no conserva raster en memoria"
+        ))
+    })?;
+
+    let imagen = image::load_from_memory(datos).map_err(|e| {
+        ExportError::SerializationError(format!("No se pudo decodificar raster: {e}"))
+    })?;
+
+    let ancho = imagen.width();
+    let alto = imagen.height();
+    let x = bounding_box.x.min(ancho);
+    let y = bounding_box.y.min(alto);
+    let w = bounding_box.width.min(ancho.saturating_sub(x)).max(1);
+    let h = bounding_box.height.min(alto.saturating_sub(y)).max(1);
+
+    let recorte = imagen.crop_imm(x, y, w, h);
+    let mut cursor = Cursor::new(Vec::new());
+    recorte
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| {
+            ExportError::SerializationError(format!("No se pudo codificar recorte PNG: {e}"))
+        })?;
+
+    Ok(cursor.into_inner())
+}
+
+fn latex_elemento(
+    job: &Job,
+    _pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    directorio_assets: &Path,
+    nombre_asset: &str,
+) -> Result<String, ExportError> {
+    let x = px_a_pt(elemento.bounding_box.x);
+    let y = px_a_pt(elemento.bounding_box.y);
+    let width = px_a_pt(elemento.bounding_box.width);
+    let height = px_a_pt(elemento.bounding_box.height);
+    let mut contenido = String::new();
+
+    contenido.push_str(&format!(
+        "\\begin{{textblock*}}{{{width:.2}pt}}({x:.2}pt,{y:.2}pt)\n"
+    ));
+
+    match elemento.role {
+        ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
+            if let Some(ref imagen) = elemento.image_crop {
+                match recortar_imagen_desde_referencia(
+                    job,
+                    imagen.page_number,
+                    &imagen.bounding_box,
+                ) {
+                    Ok(bytes) => {
+                        let ruta = directorio_assets.join(nombre_asset);
+                        fs::write(&ruta, bytes)?;
+                        let nombre_relativo = ruta
+                            .file_name()
+                            .and_then(|valor| valor.to_str())
+                            .unwrap_or(nombre_asset);
+                        let directorio_relativo = directorio_assets
+                            .file_name()
+                            .and_then(|valor| valor.to_str())
+                            .unwrap_or("documento_assets");
+                        contenido.push_str(&format!(
+                            "\\includegraphics[width={width:.2}pt,height={height:.2}pt]{{{}/{}}}\n",
+                            escape_latex(directorio_relativo),
+                            escape_latex(nombre_relativo)
+                        ));
+                    }
+                    Err(_) => {
+                        contenido.push_str("\\fbox{Imagen no disponible en memoria}\n");
+                    }
+                }
+            }
+        }
+        ElementRole::Table => {
+            if let Some(ref tabla) = elemento.table {
+                contenido.push_str(&latex_tabla(tabla, width));
+            } else if !elemento.text.trim().is_empty() {
+                contenido.push_str(&latex_parrafo(
+                    &elemento.text,
+                    elemento.style.alignment,
+                    elemento.style.emphasis,
+                    elemento.style.font_scale,
+                ));
+            }
+        }
+        _ => {
+            if !elemento.text.trim().is_empty() {
+                contenido.push_str(&latex_parrafo(
+                    &elemento.text,
+                    elemento.style.alignment,
+                    elemento.style.emphasis,
+                    elemento.style.font_scale,
+                ));
+            }
+        }
+    }
+
+    contenido.push_str("\\end{textblock*}\n");
+    Ok(contenido)
+}
+
+fn latex_parrafo(
+    texto: &str,
+    alineacion: AlignmentHint,
+    emphasis: EmphasisHint,
+    escala_fuente: f32,
+) -> String {
+    let mut contenido = String::new();
+    let tamano = (11.0 * escala_fuente as f64).clamp(9.0, 24.0);
+    let interlineado = (tamano * 1.18).clamp(10.0, 28.0);
+    contenido.push_str(&format!(
+        "\\fontsize{{{tamano:.2}pt}}{{{interlineado:.2}pt}}\\selectfont\n"
+    ));
+    contenido.push_str(match alineacion {
+        AlignmentHint::Center => "\\centering\n",
+        AlignmentHint::Right => "\\raggedleft\n",
+        AlignmentHint::Left | AlignmentHint::FullWidth => "\\RaggedRight\n",
+    });
+
+    let texto_escapado = escape_latex(texto);
+    if emphasis == EmphasisHint::Strong {
+        contenido.push_str(&format!("\\textbf{{{texto_escapado}}}\n"));
+    } else {
+        contenido.push_str(&texto_escapado);
+        contenido.push('\n');
+    }
+    contenido
+}
+
+fn latex_tabla(tabla: &TableStructure, ancho_total_pt: f64) -> String {
+    if tabla.rows.is_empty() || tabla.num_cols == 0 {
+        return "[Tabla vacia]\n".to_string();
+    }
+
+    let columnas = tabla.num_cols.max(1) as usize;
+    let ancho_columna = (ancho_total_pt / columnas as f64).max(48.0);
+    let especificacion = (0..columnas)
+        .map(|_| format!("|p{{{ancho_columna:.2}pt}}"))
+        .collect::<String>()
+        + "|";
+
+    let mut contenido = String::new();
+    contenido.push_str("\\renewcommand{\\arraystretch}{1.05}\n");
+    contenido.push_str(&format!(
+        "\\begin{{tabular}}{{{especificacion}}}\n\\hline\n"
+    ));
+
+    for fila in &tabla.rows {
+        let celdas = fila
+            .iter()
+            .map(|celda| escape_latex(&celda.content))
+            .collect::<Vec<_>>();
+        contenido.push_str(&celdas.join(" & "));
+        contenido.push_str(" \\\\\n\\hline\n");
+    }
+
+    contenido.push_str("\\end{tabular}\n");
+    contenido
+}
+
+fn docx_xml_elemento(
+    job: &Job,
+    _pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    relaciones_imagen: &mut Vec<(String, String)>,
+    media: &mut Vec<(String, Vec<u8>)>,
+    contador_rel: &mut usize,
+    contador_docpr: &mut u32,
+) -> Result<String, ExportError> {
+    match elemento.role {
+        ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
+            if let Some(ref imagen) = elemento.image_crop {
+                match recortar_imagen_desde_referencia(
+                    job,
+                    imagen.page_number,
+                    &imagen.bounding_box,
+                ) {
+                    Ok(bytes) => {
+                        let rel_id = format!("rId{}", *contador_rel);
+                        let nombre = format!("image{}.png", *contador_rel);
+                        relaciones_imagen.push((rel_id.clone(), nombre.clone()));
+                        media.push((nombre, bytes));
+                        *contador_rel += 1;
+                        let width_emu = (px_a_pt(elemento.bounding_box.width)
+                            * EMUS_POR_PUNTO as f64)
+                            .round()
+                            .max(1.0) as u64;
+                        let height_emu = (px_a_pt(elemento.bounding_box.height)
+                            * EMUS_POR_PUNTO as f64)
+                            .round()
+                            .max(1.0) as u64;
+                        let xml = docx_xml_imagen(
+                            &rel_id,
+                            width_emu,
+                            height_emu,
+                            *contador_docpr,
+                            elemento.style.alignment,
+                        );
+                        *contador_docpr += 1;
+                        Ok(xml)
+                    }
+                    Err(_) => Ok(docx_xml_parrafo(
+                        "Imagen omitida: raster no disponible en memoria",
+                        elemento.style.alignment,
+                        EmphasisHint::Neutral,
+                        1.0,
+                    )),
+                }
+            } else {
+                Ok(String::new())
+            }
+        }
+        ElementRole::Table => {
+            if let Some(ref tabla) = elemento.table {
+                Ok(docx_xml_tabla(tabla))
+            } else {
+                Ok(docx_xml_parrafo(
+                    &elemento.text,
+                    elemento.style.alignment,
+                    elemento.style.emphasis,
+                    elemento.style.font_scale,
+                ))
+            }
+        }
+        _ => Ok(docx_xml_parrafo(
+            &elemento.text,
+            elemento.style.alignment,
+            elemento.style.emphasis,
+            elemento.style.font_scale,
+        )),
+    }
+}
+
+fn docx_xml_parrafo(
+    texto: &str,
+    alineacion: AlignmentHint,
+    emphasis: EmphasisHint,
+    escala_fuente: f32,
+) -> String {
+    if texto.trim().is_empty() {
+        return String::new();
+    }
+
+    let half_points = ((11.0 * escala_fuente as f64).clamp(9.0, 26.0) * 2.0).round() as u32;
+    let alineacion_xml = match alineacion {
+        AlignmentHint::Left | AlignmentHint::FullWidth => "left",
+        AlignmentHint::Center => "center",
+        AlignmentHint::Right => "right",
+    };
+    let bold = if emphasis == EmphasisHint::Strong {
+        "<w:b/>"
+    } else {
+        ""
+    };
+
+    format!(
+        concat!(
+            "<w:p><w:pPr><w:jc w:val=\"{}\"/></w:pPr>",
+            "<w:r><w:rPr>{}<w:sz w:val=\"{}\"/></w:rPr>",
+            "<w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>"
+        ),
+        alineacion_xml,
+        bold,
+        half_points,
+        escape_xml(texto)
+    )
+}
+
+fn docx_xml_tabla(tabla: &TableStructure) -> String {
+    if tabla.rows.is_empty() {
+        return "<w:p><w:r><w:t>Tabla vacia</w:t></w:r></w:p>".to_string();
+    }
+
+    let mut xml = String::new();
+    xml.push_str(
+        "<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/>\
+         <w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>\
+         <w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>\
+         <w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>\
+         <w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>\
+         <w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>\
+         <w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>\
+         </w:tblBorders></w:tblPr>",
+    );
+
+    for fila in &tabla.rows {
+        xml.push_str("<w:tr>");
+        for celda in fila {
+            xml.push_str("<w:tc><w:p><w:r><w:t xml:space=\"preserve\">");
+            xml.push_str(&escape_xml(&celda.content));
+            xml.push_str("</w:t></w:r></w:p></w:tc>");
+        }
+        xml.push_str("</w:tr>");
+    }
+
+    xml.push_str("</w:tbl>");
+    xml
+}
+
+fn docx_xml_imagen(
+    rel_id: &str,
+    width_emu: u64,
+    height_emu: u64,
+    doc_pr_id: u32,
+    alineacion: AlignmentHint,
+) -> String {
+    let alineacion_xml = match alineacion {
+        AlignmentHint::Center => "center",
+        AlignmentHint::Right => "right",
+        AlignmentHint::Left | AlignmentHint::FullWidth => "left",
+    };
+
+    format!(
+        concat!(
+            "<w:p><w:pPr><w:jc w:val=\"{}\"/></w:pPr><w:r><w:drawing>",
+            "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" ",
+            "xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\">",
+            "<wp:extent cx=\"{}\" cy=\"{}\"/><wp:docPr id=\"{}\" name=\"Imagen {}\"/>",
+            "<a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">",
+            "<a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">",
+            "<pic:pic xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">",
+            "<pic:nvPicPr><pic:cNvPr id=\"0\" name=\"Imagen {}\"/><pic:cNvPicPr/></pic:nvPicPr>",
+            "<pic:blipFill><a:blip r:embed=\"{}\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"/>",
+            "<a:stretch><a:fillRect/></a:stretch></pic:blipFill>",
+            "<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{}\" cy=\"{}\"/></a:xfrm>",
+            "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>",
+            "</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"
+        ),
+        alineacion_xml,
+        width_emu,
+        height_emu,
+        doc_pr_id,
+        doc_pr_id,
+        doc_pr_id,
+        rel_id,
+        width_emu,
+        height_emu
+    )
+}
+
+fn construir_document_rels(relaciones_imagen: &[(String, String)]) -> String {
+    let mut xml = String::new();
+    xml.push_str(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+         <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">",
+    );
+
+    for (rel_id, nombre) in relaciones_imagen {
+        xml.push_str(&format!(
+            "<Relationship Id=\"{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/{}\"/>",
+            rel_id, nombre
+        ));
+    }
+
+    xml.push_str("</Relationships>");
+    xml
+}
+
+fn construir_content_types_docx(tiene_png: bool) -> String {
+    let mut xml = String::new();
+    xml.push_str(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+         <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+         <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+         <Default Extension=\"xml\" ContentType=\"application/xml\"/>",
+    );
+    if tiene_png {
+        xml.push_str("<Default Extension=\"png\" ContentType=\"image/png\"/>");
+    }
+    xml.push_str(
+        "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>\
+         </Types>",
+    );
+    xml
+}
+
+fn escape_xml(texto: &str) -> String {
+    texto
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn escape_latex(texto: &str) -> String {
+    texto
+        .replace('\\', "\\textbackslash{}")
+        .replace('&', "\\&")
+        .replace('%', "\\%")
+        .replace('$', "\\$")
+        .replace('#', "\\#")
+        .replace('_', "\\_")
+        .replace('{', "\\{")
+        .replace('}', "\\}")
+        .replace('~', "\\textasciitilde{}")
+        .replace('^', "\\textasciicircum{}")
+}
+
+struct ZipEntry {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+impl ZipEntry {
+    fn new(path: impl Into<String>, bytes: Vec<u8>) -> Self {
+        Self {
+            path: path.into(),
+            bytes,
+        }
+    }
+}
+
+fn escribir_zip_sin_compresion(
+    entradas: &[ZipEntry],
+    ruta_salida: &Path,
+) -> Result<(), ExportError> {
+    let mut archivo = Vec::new();
+    let mut directorio_central = Vec::new();
+    let mut desplazamiento = 0u32;
+
+    for entrada in entradas {
+        let nombre = entrada.path.as_bytes();
+        let crc = crc32(&entrada.bytes);
+        let tamano = entrada.bytes.len() as u32;
+
+        escribir_u32(&mut archivo, 0x04034b50);
+        escribir_u16(&mut archivo, 20);
+        escribir_u16(&mut archivo, 0);
+        escribir_u16(&mut archivo, 0);
+        escribir_u16(&mut archivo, 0);
+        escribir_u16(&mut archivo, 0);
+        escribir_u32(&mut archivo, crc);
+        escribir_u32(&mut archivo, tamano);
+        escribir_u32(&mut archivo, tamano);
+        escribir_u16(&mut archivo, nombre.len() as u16);
+        escribir_u16(&mut archivo, 0);
+        archivo.extend_from_slice(nombre);
+        archivo.extend_from_slice(&entrada.bytes);
+
+        escribir_u32(&mut directorio_central, 0x02014b50);
+        escribir_u16(&mut directorio_central, 20);
+        escribir_u16(&mut directorio_central, 20);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u32(&mut directorio_central, crc);
+        escribir_u32(&mut directorio_central, tamano);
+        escribir_u32(&mut directorio_central, tamano);
+        escribir_u16(&mut directorio_central, nombre.len() as u16);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u16(&mut directorio_central, 0);
+        escribir_u32(&mut directorio_central, 0);
+        escribir_u32(&mut directorio_central, desplazamiento);
+        directorio_central.extend_from_slice(nombre);
+
+        desplazamiento = archivo.len() as u32;
+    }
+
+    let inicio_directorio = archivo.len() as u32;
+    archivo.extend_from_slice(&directorio_central);
+
+    escribir_u32(&mut archivo, 0x06054b50);
+    escribir_u16(&mut archivo, 0);
+    escribir_u16(&mut archivo, 0);
+    escribir_u16(&mut archivo, entradas.len() as u16);
+    escribir_u16(&mut archivo, entradas.len() as u16);
+    escribir_u32(&mut archivo, directorio_central.len() as u32);
+    escribir_u32(&mut archivo, inicio_directorio);
+    escribir_u16(&mut archivo, 0);
+
+    fs::write(ruta_salida, archivo)?;
+    Ok(())
+}
+
+fn escribir_u16(buffer: &mut Vec<u8>, valor: u16) {
+    buffer.extend_from_slice(&valor.to_le_bytes());
+}
+
+fn escribir_u32(buffer: &mut Vec<u8>, valor: u32) {
+    buffer.extend_from_slice(&valor.to_le_bytes());
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let mascara = (crc & 1).wrapping_neg() & 0xedb8_8320;
+            crc = (crc >> 1) ^ mascara;
+        }
+    }
+
+    !crc
 }

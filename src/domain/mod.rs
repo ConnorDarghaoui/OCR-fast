@@ -265,6 +265,31 @@ impl TableStructure {
 
         resultado
     }
+
+    /// Convierte la tabla a una representación tabulada de texto plano.
+    ///
+    /// Este formato existe para exportación `TXT` y para degradación controlada
+    /// en rutas donde la estructura visual exacta no puede conservarse.
+    ///
+    /// # Performance
+    ///
+    /// Recorre la tabla una sola vez y evita buffers adicionales fuera del
+    /// `Vec<String>` necesario para ensamblar cada fila.
+    pub fn to_plain_text(&self) -> String {
+        if self.rows.is_empty() {
+            return String::new();
+        }
+
+        let mut resultado = String::new();
+
+        for fila in &self.rows {
+            let celdas: Vec<String> = fila.iter().map(|c| c.content.clone()).collect();
+            resultado.push_str(&celdas.join("\t"));
+            resultado.push('\n');
+        }
+
+        resultado
+    }
 }
 
 /// Celda lógica de una tabla con información de contenido y spans.
@@ -308,9 +333,13 @@ pub struct Rectangle {
 /// de aplicación a nombres concretos de exportadores.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
 pub enum OutputFormat {
-    /// Markdown con estructura de bloques.
+    /// Texto plano en orden de lectura.
     #[default]
-    Markdown,
+    Txt,
+    /// Documento Word editable con preservación visual aproximada.
+    Docx,
+    /// Fuente LaTeX con posicionamiento guiado por blueprint visual.
+    Latex,
     /// PDF tipo sandwich (imagen + texto invisible seleccionable).
     Pdf,
     /// JSON con el Job completo serializado.
@@ -326,7 +355,9 @@ impl OutputFormat {
     /// tabla aquí centraliza compatibilidad y evita divergencia entre UI y storage.
     pub fn extension(&self) -> &'static str {
         match self {
-            Self::Markdown => "md",
+            Self::Txt => "txt",
+            Self::Docx => "docx",
+            Self::Latex => "tex",
             Self::Pdf => "pdf",
             Self::Json => "json",
         }
@@ -340,7 +371,9 @@ impl OutputFormat {
     /// tocar flujos de persistencia ni convenciones de archivos.
     pub fn nombre(&self) -> &'static str {
         match self {
-            Self::Markdown => "Markdown",
+            Self::Txt => "TXT",
+            Self::Docx => "DOCX",
+            Self::Latex => "LaTeX",
             Self::Pdf => "PDF",
             Self::Json => "JSON",
         }
@@ -353,7 +386,9 @@ impl OutputFormat {
     /// Se expone como slice estático para evitar asignaciones y para preservar un
     /// orden determinista en menús y pruebas de snapshot.
     pub const OPCIONES: &'static [OutputFormat] = &[
-        OutputFormat::Markdown,
+        OutputFormat::Txt,
+        OutputFormat::Docx,
+        OutputFormat::Latex,
         OutputFormat::Pdf,
         OutputFormat::Json,
     ];

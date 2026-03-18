@@ -403,9 +403,20 @@ mod exporter_tests {
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableStructure,
     };
-    use ocrfast::infrastructure::exporters::{JsonExporter, MarkdownExporter};
+    use ocrfast::infrastructure::exporters::{
+        DocxExporter, JsonExporter, LatexExporter, TxtExporter,
+    };
     use ocrfast::interfaces::ports::ExporterPort;
     use std::collections::HashMap;
+
+    fn png_color_sintetico(ancho: u32, alto: u32, color: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(ancho, alto, image::Rgb(color));
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+        buffer.into_inner()
+    }
 
     fn job_con_tabla(con_estructura: bool) -> Job {
         let tabla = if con_estructura {
@@ -476,21 +487,51 @@ mod exporter_tests {
                     width: 300,
                     height: 200,
                 },
-                image_data: None,
-                blocks: vec![Block {
-                    block_type: BlockType::Table,
-                    bounding_box: Rectangle {
-                        x: 0,
-                        y: 0,
-                        width: 300,
-                        height: 100,
+                image_data: Some(png_color_sintetico(300, 200, [240, 240, 240])),
+                blocks: vec![
+                    Block {
+                        block_type: BlockType::Title,
+                        bounding_box: Rectangle {
+                            x: 20,
+                            y: 10,
+                            width: 260,
+                            height: 30,
+                        },
+                        content: "Informe".to_string(),
+                        confidence: 0.98,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
                     },
-                    content: "Nombre | Edad\nAna | 30".to_string(),
-                    confidence: 0.9,
-                    embedded_image: None,
-                    table_structure: tabla,
-                    reading_order: 0,
-                }],
+                    Block {
+                        block_type: BlockType::Table,
+                        bounding_box: Rectangle {
+                            x: 0,
+                            y: 50,
+                            width: 300,
+                            height: 100,
+                        },
+                        content: "Nombre | Edad\nAna | 30".to_string(),
+                        confidence: 0.9,
+                        embedded_image: None,
+                        table_structure: tabla,
+                        reading_order: 1,
+                    },
+                    Block {
+                        block_type: BlockType::Image,
+                        bounding_box: Rectangle {
+                            x: 40,
+                            y: 155,
+                            width: 80,
+                            height: 35,
+                        },
+                        content: String::new(),
+                        confidence: 0.95,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 2,
+                    },
+                ],
             }],
             metadata: HashMap::new(),
         };
@@ -508,48 +549,91 @@ mod exporter_tests {
     }
 
     #[test]
-    fn test_markdown_tabla_con_estructura_usa_to_markdown() {
-        let dir = std::env::temp_dir().join("ocrfast_exp_test_md");
+    fn test_txt_exporter_tabla_con_estructura_usa_texto_plano() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_txt");
         std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join("output.md");
+        let ruta = dir.join("output.txt");
 
-        let exporter = MarkdownExporter::new();
+        let exporter = TxtExporter::new();
         exporter.export(&job_con_tabla(true), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
         assert!(
-            contenido.contains("---"),
-            "Tabla con estructura debe usar formato Markdown con separadores"
+            contenido.contains("Nombre\tEdad"),
+            "La tabla estructurada debe degradarse a texto tabulado"
         );
         assert!(
-            contenido.contains("Nombre"),
-            "Debe contener nombre de columna"
-        );
-        assert!(
-            contenido.contains("Edad"),
-            "Debe contener nombre de columna"
-        );
-        assert!(
-            !contenido.contains("```\n[Tabla]"),
-            "No debe usar el fallback de bloque de codigo antiguo"
+            contenido.contains("ANA") || contenido.contains("Ana"),
+            "El TXT debe incluir el contenido de celdas"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_markdown_tabla_sin_estructura_usa_fallback() {
-        let dir = std::env::temp_dir().join("ocrfast_exp_test_md_fb");
+    fn test_docx_exporter_genera_paquete_word_con_media() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_docx");
         std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join("output.md");
+        let ruta = dir.join("output.docx");
 
-        let exporter = MarkdownExporter::new();
-        exporter.export(&job_con_tabla(false), &ruta).unwrap();
+        let exporter = DocxExporter::new();
+        exporter.export(&job_con_tabla(true), &ruta).unwrap();
+
+        assert!(ruta.exists(), "El archivo DOCX debe existir");
+        let contenido = std::fs::read(&ruta).unwrap();
+        assert!(
+            contenido
+                .windows("word/document.xml".len())
+                .any(|w| w == b"word/document.xml"),
+            "El paquete DOCX debe incluir word/document.xml"
+        );
+        assert!(
+            contenido
+                .windows("word/media/image1.png".len())
+                .any(|w| w == b"word/media/image1.png"),
+            "El DOCX debe incluir la imagen recortada como media interna"
+        );
+        assert!(
+            contenido
+                .windows("Informe".len())
+                .any(|w| w == "Informe".as_bytes()),
+            "El XML del documento debe contener el titulo exportado"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_latex_exporter_genera_fuente_y_assets() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        let exporter = LatexExporter::new();
+        exporter.export(&job_con_tabla(true), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
         assert!(
-            contenido.contains("Nombre | Edad"),
-            "Sin estructura debe exportar el texto plano del bloque"
+            contenido.contains("\\begin{textblock*}"),
+            "La salida LaTeX debe usar bloques absolutos guiados por blueprint"
+        );
+        assert!(
+            contenido.contains("\\includegraphics"),
+            "La salida LaTeX debe intentar preservar figuras del original"
+        );
+        assert!(
+            contenido.contains("\\begin{tabular}"),
+            "La salida LaTeX debe materializar tablas"
+        );
+
+        let assets = dir.join("output_assets");
+        assert!(
+            assets.exists(),
+            "El exportador debe generar directorio de assets"
+        );
+        assert!(
+            assets.join("page1_element3.png").exists(),
+            "La figura recortada debe persistirse como asset externo"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
