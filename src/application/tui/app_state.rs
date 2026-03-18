@@ -588,11 +588,6 @@ impl AppState {
         self.exportar_trabajo_seleccionado("TXT", "txt");
     }
 
-    /// Exporta el trabajo seleccionado a DOCX.
-    pub fn exportar_trabajo_docx(&mut self) {
-        self.exportar_trabajo_seleccionado("DOCX", "docx");
-    }
-
     /// Exporta el trabajo seleccionado a LaTeX.
     pub fn exportar_trabajo_latex(&mut self) {
         self.exportar_trabajo_seleccionado("LaTeX", "tex");

@@ -346,7 +346,7 @@ fn renderizar_detalle_trabajo_enmarcado(
 
     let lista =
         List::new(items_visibles).block(Block::default().borders(Borders::ALL).title(format!(
-            " BLOQUES (ID: {}) [t:TXT d:DOCX l:LaTeX p:PDF J:JSON q:Volver]",
+            " BLOQUES (ID: {}) [t:TXT l:LaTeX p:PDF J:JSON q:Volver]",
             &trabajo.id[..8]
         )));
     marco.render_widget(lista, area);
@@ -593,10 +593,6 @@ fn renderizar_ayuda(marco: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  t         ", Style::default().fg(Color::Yellow)),
             Span::raw("Exportar como TXT (.txt)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  d         ", Style::default().fg(Color::Yellow)),
-            Span::raw("Exportar como DOCX (.docx)"),
         ]),
         Line::from(vec![
             Span::styled("  l         ", Style::default().fg(Color::Yellow)),

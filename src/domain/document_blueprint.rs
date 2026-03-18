@@ -2,7 +2,7 @@ use crate::domain::{Dimensions, Rectangle, TableStructure};
 
 /// Representación intermedia para exportadores de alta fidelidad.
 ///
-/// El blueprint desacopla OCR/layout de los detalles de `DOCX`, `LaTeX` o PDF
+/// El blueprint desacopla OCR/layout de los detalles de `LaTeX` o PDF
 /// reconstruido. Su objetivo es preservar suficiente geometría y semántica para
 /// reconstruir el documento sin obligar a cada exportador a reinterpretar el
 /// árbol crudo de `Document`.

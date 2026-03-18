@@ -8,7 +8,7 @@ use crate::interfaces::ports::DocumentBlueprintBuilderPort;
 /// Reconstruye un blueprint visual estable para exportadores ricos.
 ///
 /// El builder encapsula heurísticas de columnas, anclas y preservación de
-/// activos visuales para que `DOCX`, `LaTeX` y futuros exportadores operen
+/// activos visuales para que `LaTeX`, PDF y futuros exportadores operen
 /// sobre un modelo coherente en vez de reinterpretar bloques OCR ad hoc.
 ///
 /// # Performance

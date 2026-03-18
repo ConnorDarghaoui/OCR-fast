@@ -4,7 +4,7 @@ pub mod document_assemblers;
 pub mod document_blueprints;
 /// Adaptadores concretos de parsing y render de documentos.
 pub mod document_parsers;
-/// Materializadores de salida para TXT, DOCX, LaTeX, PDF y JSON.
+/// Materializadores de salida para TXT, LaTeX, PDF y JSON.
 pub mod exporters;
 /// Persistencia local de snapshots de trabajos.
 pub mod job_store;

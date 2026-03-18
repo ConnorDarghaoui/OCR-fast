@@ -347,7 +347,7 @@ pub struct TableCellStyle {
     pub is_emphasized: bool,
 }
 
-/// Alineación tabular neutral para DOCX, LaTeX y PDF.
+/// Alineación tabular neutral para LaTeX y PDF.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum TableCellAlignment {
     Left,
@@ -382,8 +382,6 @@ pub enum OutputFormat {
     /// Texto plano en orden de lectura.
     #[default]
     Txt,
-    /// Documento Word editable con preservación visual aproximada.
-    Docx,
     /// Fuente LaTeX con posicionamiento guiado por blueprint visual.
     Latex,
     /// PDF reconstruido desde layout, texto, tablas e imágenes.
@@ -402,7 +400,6 @@ impl OutputFormat {
     pub fn extension(&self) -> &'static str {
         match self {
             Self::Txt => "txt",
-            Self::Docx => "docx",
             Self::Latex => "tex",
             Self::Pdf => "pdf",
             Self::Json => "json",
@@ -418,7 +415,6 @@ impl OutputFormat {
     pub fn nombre(&self) -> &'static str {
         match self {
             Self::Txt => "TXT",
-            Self::Docx => "DOCX",
             Self::Latex => "LaTeX",
             Self::Pdf => "PDF",
             Self::Json => "JSON",
@@ -433,7 +429,6 @@ impl OutputFormat {
     /// orden determinista en menús y pruebas de snapshot.
     pub const OPCIONES: &'static [OutputFormat] = &[
         OutputFormat::Txt,
-        OutputFormat::Docx,
         OutputFormat::Latex,
         OutputFormat::Pdf,
         OutputFormat::Json,

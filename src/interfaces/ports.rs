@@ -189,7 +189,7 @@ pub trait TableAnalyzerPort: Send + Sync {
 /// Contrato para reconstrucción visual posterior a OCR y layout.
 ///
 /// El builder traduce el árbol crudo del dominio a una representación intermedia
-/// orientada a exportadores ricos como DOCX, LaTeX o PDF reconstruido. Esta fase
+/// orientada a exportadores ricos como LaTeX o PDF reconstruido. Esta fase
 /// existe para evitar que cada exportador reimplante heurísticas de columnas,
 /// anclas visuales y preservación de imágenes.
 ///
