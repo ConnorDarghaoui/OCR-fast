@@ -816,6 +816,124 @@ mod exporter_tests {
         }
     }
 
+    fn job_latex_facsimil() -> Job {
+        let mut img = image::RgbImage::from_pixel(1200, 1600, image::Rgb([248, 248, 244]));
+        for y in 180..430 {
+            for x in 720..1020 {
+                img.put_pixel(x, y, image::Rgb([210, 225, 245]));
+            }
+        }
+        for y in 520..700 {
+            for x in 140..520 {
+                img.put_pixel(x, y, image::Rgb([245, 215, 200]));
+            }
+        }
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+
+        Job {
+            id: "job-latex-fac".to_string(),
+            document: Document {
+                id: "exp-latex-fac".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/latex-fac.pdf"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 1200,
+                        height: 1600,
+                    },
+                    image_data: Some(buffer.into_inner()),
+                    blocks: vec![
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 24,
+                                width: 960,
+                                height: 32,
+                            },
+                            content: "Encabezado repetido del libro".to_string(),
+                            confidence: 0.99,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 0,
+                        },
+                        Block {
+                            block_type: BlockType::Title,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 120,
+                                width: 960,
+                                height: 70,
+                            },
+                            content: "Titulo original".to_string(),
+                            confidence: 0.98,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 1,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 240,
+                                width: 380,
+                                height: 150,
+                            },
+                            content: "columna izquierda uno".to_string(),
+                            confidence: 0.95,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 2,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 700,
+                                y: 240,
+                                width: 320,
+                                height: 170,
+                            },
+                            content: "columna derecha dudosa".to_string(),
+                            confidence: 0.43,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 3,
+                        },
+                        Block {
+                            block_type: BlockType::Image,
+                            bounding_box: Rectangle {
+                                x: 140,
+                                y: 520,
+                                width: 380,
+                                height: 180,
+                            },
+                            content: String::new(),
+                            confidence: 0.97,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 4,
+                        },
+                    ],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
     fn job_dos_columnas() -> Job {
         Job {
             id: "job-cols".to_string(),
@@ -1157,6 +1275,55 @@ mod exporter_tests {
                 .filter_map(Result::ok)
                 .any(|entry| entry.path().extension().is_some_and(|ext| ext == "png")),
             "La figura recortada debe persistirse como asset externo"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_latex_exporter_facsimil_preserva_geometria_y_fallback_raster() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_fac");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        let exporter = LatexExporter::new_facsimile();
+        exporter.export(&job_latex_facsimil(), &ruta).unwrap();
+
+        let contenido = std::fs::read_to_string(&ruta).unwrap();
+        assert!(
+            contenido.contains("\\begin{textblock*}"),
+            "La salida facsimil debe posicionar bloques absolutos"
+        );
+        assert!(
+            contenido.contains("Encabezado repetido del libro"),
+            "La ruta facsimil debe preservar headers repetidos visibles"
+        );
+        assert!(
+            !contenido.contains("\\section*"),
+            "La ruta facsimil no debe convertir titulos a secciones semanticas"
+        );
+        assert!(
+            contenido.contains("(57.60pt,115.20pt)") && contenido.contains("(336.00pt,115.20pt)"),
+            "La ruta facsimil debe preservar la geometria de columnas"
+        );
+        assert!(
+            !contenido.contains("columna derecha dudosa"),
+            "El texto de baja confianza debe degradarse a recorte raster"
+        );
+        assert!(
+            contenido.matches("\\includegraphics").count() >= 2,
+            "La salida facsimil debe incluir la figura y el fallback raster"
+        );
+
+        let assets = dir.join("output_assets");
+        let cantidad_png = std::fs::read_dir(&assets)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
+            .count();
+        assert!(
+            cantidad_png >= 2,
+            "La ruta facsimil debe persistir assets para figura y fallback raster"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

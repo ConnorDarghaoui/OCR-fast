@@ -37,6 +37,8 @@ const EMUS_POR_PUNTO: u64 = 12_700;
 const PDF_IMAGE_JPEG_QUALITY: u8 = 82;
 /// Umbral conservador para degradar bloques OCR débiles a imagen en PDF.
 const PDF_FALLBACK_OCR_CONFIDENCE_THRESHOLD: f32 = 0.74;
+/// Umbral conservador para preservar recortes raster en LaTeX facsímil.
+const LATEX_FACSIMILE_OCR_CONFIDENCE_THRESHOLD: f32 = 0.74;
 /// La fuente core Helvetica usa una caja de 1000 unidades por EM.
 const HELVETICA_UNIDADES_POR_EM: f64 = 1000.0;
 /// Fallback conservador mientras el camino Unicode siga sin fuente embebida.
@@ -1138,6 +1140,7 @@ fn construir_plan_latex_facsimil(
             let nombre_asset = format!("page{}_element{}.png", pagina.number, indice_elemento + 1);
             body.push(construir_nodo_latex_facsimil(
                 job,
+                pagina.number,
                 elemento,
                 &nombre_asset,
                 nombre_directorio_assets,
@@ -1196,6 +1199,7 @@ fn construir_plan_latex_facsimil(
 
 fn construir_nodo_latex_facsimil(
     job: &Job,
+    numero_pagina: u32,
     elemento: &ElementBlueprint,
     nombre_asset: &str,
     nombre_directorio_assets: &str,
@@ -1204,33 +1208,52 @@ fn construir_nodo_latex_facsimil(
     let x_pt = px_a_pt(elemento.bounding_box.x);
     let y_pt = px_a_pt(elemento.bounding_box.y);
     let width_pt = px_a_pt(elemento.bounding_box.width);
-    let height_pt = px_a_pt(elemento.bounding_box.height);
 
     let content = match elemento.role {
         ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
-            if let Some(ref imagen) = elemento.image_crop {
-                match recortar_imagen_desde_referencia(
-                    job,
-                    imagen.page_number,
-                    &imagen.bounding_box,
-                ) {
-                    Ok(bytes) => {
-                        assets.push(LatexAsset {
-                            file_name: nombre_asset.to_string(),
-                            bytes,
-                        });
-                        LatexContent::Image(LatexImage {
-                            relative_path: format!("{}/{}", nombre_directorio_assets, nombre_asset),
-                            width_pt,
-                            height_pt,
-                        })
-                    }
-                    Err(_) => {
-                        LatexContent::FallbackBox("Imagen no disponible en memoria".to_string())
-                    }
-                }
+            if let Some(imagen) = construir_imagen_latex(
+                job,
+                elemento,
+                nombre_asset,
+                nombre_directorio_assets,
+                assets,
+            )? {
+                LatexContent::Image(imagen)
             } else {
                 LatexContent::FallbackBox("Imagen no disponible en memoria".to_string())
+            }
+        }
+        ElementRole::Formula if elemento.style.preserve_positioning => {
+            if let Some(imagen) = construir_imagen_latex_desde_bbox(
+                job,
+                numero_pagina,
+                &elemento.bounding_box,
+                nombre_asset,
+                nombre_directorio_assets,
+                assets,
+            )? {
+                LatexContent::Image(imagen)
+            } else {
+                LatexContent::FallbackBox("Formula no disponible en memoria".to_string())
+            }
+        }
+        _ if debe_preservarse_como_imagen_en_latex_facsimil(elemento) => {
+            if let Some(imagen) = construir_imagen_latex_desde_bbox(
+                job,
+                numero_pagina,
+                &elemento.bounding_box,
+                nombre_asset,
+                nombre_directorio_assets,
+                assets,
+            )? {
+                LatexContent::Image(imagen)
+            } else {
+                LatexContent::Paragraph(LatexParagraph {
+                    text: elemento.text.clone(),
+                    alignment: elemento.style.alignment,
+                    emphasis: elemento.style.emphasis,
+                    font_scale: elemento.style.font_scale,
+                })
             }
         }
         ElementRole::Table => {
@@ -1264,6 +1287,20 @@ fn construir_nodo_latex_facsimil(
     }))
 }
 
+fn debe_preservarse_como_imagen_en_latex_facsimil(elemento: &ElementBlueprint) -> bool {
+    matches!(
+        elemento.role,
+        ElementRole::Title
+            | ElementRole::Paragraph
+            | ElementRole::Table
+            | ElementRole::Formula
+            | ElementRole::ListItem
+            | ElementRole::Unknown
+    ) && elemento
+        .ocr_confidence
+        .is_some_and(|valor| valor < LATEX_FACSIMILE_OCR_CONFIDENCE_THRESHOLD)
+}
+
 fn construir_parrafo_latex(elemento: &ElementBlueprint) -> Option<LatexParagraph> {
     let texto = elemento.text.trim();
     if texto.is_empty() {
@@ -1289,7 +1326,25 @@ fn construir_imagen_latex(
         return Ok(None);
     };
 
-    match recortar_imagen_desde_referencia(job, imagen.page_number, &imagen.bounding_box) {
+    construir_imagen_latex_desde_bbox(
+        job,
+        imagen.page_number,
+        &imagen.bounding_box,
+        nombre_asset,
+        nombre_directorio_assets,
+        assets,
+    )
+}
+
+fn construir_imagen_latex_desde_bbox(
+    job: &Job,
+    numero_pagina: u32,
+    bounding_box: &Rectangle,
+    nombre_asset: &str,
+    nombre_directorio_assets: &str,
+    assets: &mut Vec<LatexAsset>,
+) -> Result<Option<LatexImage>, ExportError> {
+    match recortar_imagen_desde_referencia(job, numero_pagina, bounding_box) {
         Ok(bytes) => {
             assets.push(LatexAsset {
                 file_name: nombre_asset.to_string(),
@@ -1297,8 +1352,8 @@ fn construir_imagen_latex(
             });
             Ok(Some(LatexImage {
                 relative_path: format!("{}/{}", nombre_directorio_assets, nombre_asset),
-                width_pt: px_a_pt(elemento.bounding_box.width),
-                height_pt: px_a_pt(elemento.bounding_box.height),
+                width_pt: px_a_pt(bounding_box.width),
+                height_pt: px_a_pt(bounding_box.height),
             }))
         }
         Err(_) => Ok(None),
