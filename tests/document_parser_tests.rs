@@ -170,4 +170,49 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir_temp);
     }
+
+    /// Verifica que TIFF multipágina en escala de grises use la estrategia TIFF
+    /// sin degradar a un comportamiento de página única.
+    #[test]
+    fn test_parser_tiff_multipagina_grayscale() {
+        use std::io::BufWriter;
+        use tiff::encoder::{colortype, TiffEncoder};
+
+        let dir_temp = std::env::temp_dir().join("ocrfast_test_tiff_gray_multi");
+        std::fs::create_dir_all(&dir_temp).unwrap();
+        let ruta = dir_temp.join("multi_gray.tiff");
+
+        {
+            let archivo = std::fs::File::create(&ruta).unwrap();
+            let mut encoder = TiffEncoder::new(BufWriter::new(archivo)).unwrap();
+
+            let pixeles_p1: Vec<u8> = vec![32u8; 64 * 32];
+            encoder
+                .write_image::<colortype::Gray8>(64, 32, &pixeles_p1)
+                .unwrap();
+
+            let pixeles_p2: Vec<u8> = vec![200u8; 96 * 48];
+            encoder
+                .write_image::<colortype::Gray8>(96, 48, &pixeles_p2)
+                .unwrap();
+        }
+
+        let parser = ImageDocumentParser::new();
+        let resultado = parser.parse(&ruta);
+
+        assert!(
+            resultado.is_ok(),
+            "TIFF grayscale multipagina debe parsearse: {:?}",
+            resultado.err()
+        );
+
+        let doc = resultado.unwrap();
+        assert_eq!(doc.pages.len(), 2);
+        assert_eq!(doc.pages[0].dimensions.width, 64);
+        assert_eq!(doc.pages[0].dimensions.height, 32);
+        assert_eq!(doc.pages[1].dimensions.width, 96);
+        assert_eq!(doc.pages[1].dimensions.height, 48);
+
+        let _ = std::fs::remove_dir_all(&dir_temp);
+    }
 }
