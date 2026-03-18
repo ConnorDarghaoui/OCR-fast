@@ -1,7 +1,7 @@
 use crate::application::pipeline::{OcrPipeline, PipelineEvent};
 use crate::domain::{LanguageConfig, ProcessingProfile};
 use crate::infrastructure::postprocessors::TextPostprocessor;
-use crate::interfaces::ports::{DocumentParserPort, OcrEnginePort};
+use crate::interfaces::ports::{DocumentParserPort, LayoutEngineFactoryPort, OcrEnginePort};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -46,6 +46,7 @@ impl JobRuntimeState {
         idioma: LanguageConfig,
         analizador: Arc<dyn DocumentParserPort>,
         motor: Arc<dyn OcrEnginePort>,
+        layout_factory: Arc<dyn LayoutEngineFactoryPort>,
     ) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.receptores_activos.insert(id_trabajo.clone(), rx);
@@ -63,10 +64,9 @@ impl JobRuntimeState {
             let mut pipeline = OcrPipeline::new(analizador, Arc::clone(&motor))
                 .with_postprocessor(Arc::new(postprocesador));
 
-            if !motor.provides_layout() {
-                use crate::infrastructure::layout_engines::XyCutLayoutEngine;
-                log::info!("Usando XyCutLayoutEngine como motor de layout");
-                pipeline = pipeline.with_layout_engine(Arc::new(XyCutLayoutEngine::new()));
+            if let Some(layout_engine) = layout_factory.create_for(motor.as_ref()) {
+                log::info!("Usando {} como motor de layout", layout_engine.name());
+                pipeline = pipeline.with_layout_engine(layout_engine);
             }
 
             match pipeline.procesar_documento(&ruta, &perfil, Some(&tx), Some(&cancel_flag)) {

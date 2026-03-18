@@ -2,9 +2,10 @@ use crate::application::pipeline::{PipelineEvent, PipelineFailure};
 use crate::application::tui::engine_bootstrap::EngineBootstrapState;
 use crate::application::tui::job_runtime::JobRuntimeState;
 use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
-use crate::infrastructure::exporters::{JsonExporter, MarkdownExporter, PdfSandwichExporter};
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
-use crate::interfaces::ports::{DocumentParserPort, ExporterPort, JobStorePort, OcrEnginePort};
+use crate::interfaces::ports::{
+    DocumentParserPort, JobExporterPort, JobStorePort, LayoutEngineFactoryPort, OcrEnginePort,
+};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -69,6 +70,8 @@ pub struct AppState {
     pub analizador_documentos: Arc<dyn DocumentParserPort>,
     motor_ocr: Arc<dyn OcrEnginePort>,
     job_store: Arc<dyn JobStorePort>,
+    layout_factory: Arc<dyn LayoutEngineFactoryPort>,
+    job_exporter: Arc<dyn JobExporterPort>,
     estado_motor: EngineBootstrapState,
     ejecucion_jobs: JobRuntimeState,
     /// Scroll vertical en la vista de detalle.
@@ -100,6 +103,8 @@ impl AppState {
         analizador_documentos: Arc<dyn DocumentParserPort>,
         motor_ocr: Arc<dyn OcrEnginePort>,
         job_store: Arc<dyn JobStorePort>,
+        layout_factory: Arc<dyn LayoutEngineFactoryPort>,
+        job_exporter: Arc<dyn JobExporterPort>,
     ) -> Self {
         let (trabajos, log_arranque) = cargar_trabajos_iniciales(&*job_store);
 
@@ -115,6 +120,8 @@ impl AppState {
             analizador_documentos,
             motor_ocr,
             job_store,
+            layout_factory,
+            job_exporter,
             estado_motor: EngineBootstrapState::new(),
             ejecucion_jobs: JobRuntimeState::new(),
             scroll_detalle: 0,
@@ -329,12 +336,20 @@ impl AppState {
         self.trabajos[indice].status = JobStatus::Processing;
         let analizador = Arc::clone(&self.analizador_documentos);
         let motor = Arc::clone(&self.motor_ocr);
+        let layout_factory = Arc::clone(&self.layout_factory);
         let perfil = self.trabajos[indice].profile;
         let ruta = self.trabajos[indice].document.source_path.clone();
         let idioma = self.idioma.clone();
 
-        self.ejecucion_jobs
-            .iniciar(id_trabajo.clone(), ruta, perfil, idioma, analizador, motor);
+        self.ejecucion_jobs.iniciar(
+            id_trabajo.clone(),
+            ruta,
+            perfil,
+            idioma,
+            analizador,
+            motor,
+            layout_factory,
+        );
 
         log::info!(
             "Procesamiento iniciado para trabajo {}",
@@ -432,8 +447,10 @@ impl AppState {
                                 .document
                                 .source_path
                                 .with_extension(trabajo.formato_salida.extension());
-                            let resultado =
-                                exportar_segun_formato(trabajo, &ruta).map_err(|e| e.to_string());
+                            let resultado = self
+                                .job_exporter
+                                .export_job(trabajo, &ruta)
+                                .map_err(|e| e.to_string());
                             ruta_export = Some(ruta);
                             export_resultado = Some(resultado);
 
@@ -574,9 +591,7 @@ impl AppState {
         };
 
         let ruta_base = trabajo.document.source_path.with_extension("md");
-        let exportador = MarkdownExporter::new();
-
-        match exportador.export(&trabajo, &ruta_base) {
+        match self.job_exporter.export_job(&trabajo, &ruta_base) {
             Ok(_) => {
                 self.loguear(format!("Exportado MD: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
@@ -596,9 +611,7 @@ impl AppState {
         };
 
         let ruta_base = trabajo.document.source_path.with_extension("json");
-        let exportador = JsonExporter::new();
-
-        match exportador.export(&trabajo, &ruta_base) {
+        match self.job_exporter.export_job(&trabajo, &ruta_base) {
             Ok(_) => {
                 self.loguear(format!("Exportado JSON: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
@@ -618,9 +631,7 @@ impl AppState {
         };
 
         let ruta_base = trabajo.document.source_path.with_extension("pdf");
-        let exportador = PdfSandwichExporter::new();
-
-        match exportador.export(&trabajo, &ruta_base) {
+        match self.job_exporter.export_job(&trabajo, &ruta_base) {
             Ok(_) => {
                 self.loguear(format!("Exportado PDF: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
@@ -756,22 +767,6 @@ impl AppState {
     /// Retorna el progreso agregado del pipeline de un job si sigue activo.
     pub fn progreso_trabajo(&self, id_trabajo: &str) -> Option<f32> {
         self.ejecucion_jobs.progreso(id_trabajo)
-    }
-}
-
-/// Exporta un job al formato solicitado en la ruta indicada.
-fn exportar_segun_formato(
-    job: &Job,
-    ruta: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match job.formato_salida {
-        OutputFormat::Markdown => MarkdownExporter::new()
-            .export(job, ruta)
-            .map_err(|e| e.into()),
-        OutputFormat::Pdf => PdfSandwichExporter::new()
-            .export(job, ruta)
-            .map_err(|e| e.into()),
-        OutputFormat::Json => JsonExporter::new().export(job, ruta).map_err(|e| e.into()),
     }
 }
 
