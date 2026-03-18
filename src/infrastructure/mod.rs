@@ -1,3 +1,5 @@
+/// Builders de representación visual para exportación de alta fidelidad.
+pub mod document_blueprints;
 /// Adaptadores concretos de parsing y render de documentos.
 pub mod document_parsers;
 /// Materializadores de salida para Markdown, PDF y JSON.
@@ -13,6 +15,8 @@ pub mod postprocessors;
 /// Transformaciones raster previas a inferencia.
 pub mod preprocessors;
 
+/// Reexporta exportadores concretos para integración directa.
+pub use document_blueprints::*;
 /// Reexporta exportadores concretos para integración directa.
 pub use exporters::*;
 /// Reexporta stores concretos listos para uso local.

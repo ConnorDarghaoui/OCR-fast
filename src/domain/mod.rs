@@ -1,5 +1,9 @@
+/// Modelo canónico para reconstrucción visual de alta fidelidad.
+pub mod document_blueprint;
 /// Tipos de error de dominio y fronteras de fallo propagables entre capas.
 pub mod errors;
+
+pub use document_blueprint::*;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

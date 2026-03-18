@@ -1,7 +1,7 @@
-use crate::domain::{BlockType, Document, ProcessingProfile};
+use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
 use crate::interfaces::ports::{
-    DocumentParserPort, LayoutEnginePort, OcrEnginePort, PostprocessorPort, PreprocessorPort,
-    TableAnalyzerPort,
+    DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort, OcrEnginePort,
+    PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -46,6 +46,19 @@ pub enum PipelineEvent {
     Error(String),
 }
 
+/// Resultado enriquecido del pipeline OCR completo.
+///
+/// El retorno separa el `Document` operativo del blueprint visual opcional para
+/// no forzar a todos los callers a pagar ni depender de exportación de alta
+/// fidelidad. La estructura mantiene compatibilidad progresiva con la API previa
+/// basada solo en `Document`.
+pub struct PipelineResult {
+    /// Documento OCR con bloques y contenido listo para persistencia o UI.
+    pub document: Document,
+    /// Modelo intermedio opcional para exportadores visuales ricos.
+    pub blueprint: Option<DocumentBlueprint>,
+}
+
 /// Orquestador inmutable del pipeline OCR multi-fase.
 ///
 /// `OcrPipeline` encapsula las dependencias por etapa y usa un builder ligero
@@ -65,6 +78,7 @@ pub struct OcrPipeline {
     ocr_engine: Arc<dyn OcrEnginePort>,
     table_analyzer: Option<Arc<dyn TableAnalyzerPort>>,
     postprocesador: Option<Arc<dyn PostprocessorPort>>,
+    blueprint_builder: Option<Arc<dyn DocumentBlueprintBuilderPort>>,
 }
 
 impl OcrPipeline {
@@ -83,6 +97,7 @@ impl OcrPipeline {
             ocr_engine,
             table_analyzer: None,
             postprocesador: None,
+            blueprint_builder: None,
         }
     }
 
@@ -107,6 +122,15 @@ impl OcrPipeline {
     /// Añade una fase de postproceso textual posterior a la inferencia.
     pub fn with_postprocessor(mut self, postprocesador: Arc<dyn PostprocessorPort>) -> Self {
         self.postprocesador = Some(postprocesador);
+        self
+    }
+
+    /// Añade una fase opcional de reconstrucción visual para exportadores ricos.
+    pub fn with_blueprint_builder(
+        mut self,
+        blueprint_builder: Arc<dyn DocumentBlueprintBuilderPort>,
+    ) -> Self {
+        self.blueprint_builder = Some(blueprint_builder);
         self
     }
 
@@ -140,6 +164,23 @@ impl OcrPipeline {
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Document, Box<dyn std::error::Error + Send + Sync>> {
+        self.procesar_documento_con_blueprint(ruta, perfil, notificador, cancelacion)
+            .map(|resultado| resultado.document)
+    }
+
+    /// Ejecuta el pipeline y devuelve, opcionalmente, el blueprint visual final.
+    ///
+    /// Esta variante conserva la misma ruta crítica del OCR tradicional pero
+    /// añade una frontera explícita para reconstrucción visual posterior al
+    /// postproceso. La separación permite que callers sensibles a latencia sigan
+    /// consumiendo únicamente `procesar_documento`.
+    pub fn procesar_documento_con_blueprint(
+        &self,
+        ruta: &Path,
+        perfil: &ProcessingProfile,
+        notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
+        cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<PipelineResult, Box<dyn std::error::Error + Send + Sync>> {
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -236,6 +277,26 @@ impl OcrPipeline {
             log::info!("Pipeline: postprocesamiento completado");
         }
 
+        self.verificar_cancelacion(cancelacion)?;
+
+        let blueprint = if let Some(ref blueprint_builder) = self.blueprint_builder {
+            self.notificar(
+                notificador,
+                PipelineEvent::FaseCambiada {
+                    fase: "Reconstruyendo blueprint visual".to_string(),
+                    progreso: 0.96,
+                },
+            );
+            let blueprint = blueprint_builder.build_blueprint(&documento)?;
+            log::info!(
+                "Pipeline: blueprint visual completado ({})",
+                blueprint_builder.name()
+            );
+            Some(blueprint)
+        } else {
+            None
+        };
+
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -244,7 +305,10 @@ impl OcrPipeline {
             },
         );
 
-        Ok(documento)
+        Ok(PipelineResult {
+            document: documento,
+            blueprint,
+        })
     }
 
     fn verificar_cancelacion(
