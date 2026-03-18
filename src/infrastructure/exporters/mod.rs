@@ -1,7 +1,7 @@
 use crate::domain::errors::ExportError;
 use crate::domain::{
     AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job, Page,
-    Rectangle, TableStructure,
+    Rectangle, TableCellAlignment, TableStructure,
 };
 use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort};
@@ -802,6 +802,17 @@ fn agregar_tabla_pdf(
 
     for (indice_fila, fila) in tabla.rows.iter().enumerate() {
         for (indice_columna, celda) in fila.iter().enumerate() {
+            let mut estilo_celda = elemento.style.clone();
+            if let Some(ref style) = celda.style {
+                estilo_celda.alignment = alignment_hint_from_table(style.alignment);
+                if style.is_emphasized {
+                    estilo_celda.emphasis = EmphasisHint::Strong;
+                }
+            } else if tabla.is_header_row(indice_fila) {
+                estilo_celda.emphasis = EmphasisHint::Strong;
+                estilo_celda.alignment = AlignmentHint::Center;
+            }
+
             let caja = ElementBlueprint {
                 role: ElementRole::Paragraph,
                 bounding_box: Rectangle {
@@ -826,7 +837,7 @@ fn agregar_tabla_pdf(
                 suspected_footer: false,
                 table: None,
                 image_crop: None,
-                style: elemento.style.clone(),
+                style: estilo_celda,
             };
             agregar_texto_pdf(pagina, &caja, operaciones);
         }
@@ -1091,9 +1102,10 @@ fn latex_tabla(tabla: &TableStructure, ancho_total_pt: f64) -> String {
     }
 
     let columnas = tabla.num_cols.max(1) as usize;
-    let ancho_columna = (ancho_total_pt / columnas as f64).max(48.0);
-    let especificacion = (0..columnas)
-        .map(|_| format!("|p{{{ancho_columna:.2}pt}}"))
+    let anchos_columna = latex_column_widths(tabla, ancho_total_pt, columnas);
+    let especificacion = anchos_columna
+        .iter()
+        .map(|ancho| format!("|p{{{ancho:.2}pt}}"))
         .collect::<String>()
         + "|";
 
@@ -1103,10 +1115,38 @@ fn latex_tabla(tabla: &TableStructure, ancho_total_pt: f64) -> String {
         "\\begin{{tabular}}{{{especificacion}}}\n\\hline\n"
     ));
 
-    for fila in &tabla.rows {
+    for (fila_index, fila) in tabla.rows.iter().enumerate() {
         let celdas = fila
             .iter()
-            .map(|celda| escape_latex(&celda.content))
+            .map(|celda| {
+                let texto = escape_latex(&celda.content);
+                let texto = if tabla.is_header_row(fila_index)
+                    || celda
+                        .style
+                        .as_ref()
+                        .is_some_and(|style| style.is_emphasized)
+                {
+                    format!("\\textbf{{{texto}}}")
+                } else {
+                    texto
+                };
+
+                match celda
+                    .style
+                    .as_ref()
+                    .map(|style| style.alignment)
+                    .unwrap_or_else(|| {
+                        if tabla.is_header_row(fila_index) {
+                            TableCellAlignment::Center
+                        } else {
+                            TableCellAlignment::Left
+                        }
+                    }) {
+                    TableCellAlignment::Left => format!("\\raggedright\\arraybackslash {texto}"),
+                    TableCellAlignment::Center => format!("\\centering\\arraybackslash {texto}"),
+                    TableCellAlignment::Right => format!("\\raggedleft\\arraybackslash {texto}"),
+                }
+            })
             .collect::<Vec<_>>();
         contenido.push_str(&celdas.join(" & "));
         contenido.push_str(" \\\\\n\\hline\n");
@@ -1346,11 +1386,48 @@ fn docx_xml_tabla(tabla: &TableStructure) -> String {
          <w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>\
          </w:tblBorders></w:tblPr>",
     );
+    xml.push_str("<w:tblGrid>");
+    for ancho in docx_table_column_widths(tabla) {
+        xml.push_str(&format!("<w:gridCol w:w=\"{}\"/>", ancho));
+    }
+    xml.push_str("</w:tblGrid>");
 
-    for fila in &tabla.rows {
+    for (fila_index, fila) in tabla.rows.iter().enumerate() {
         xml.push_str("<w:tr>");
+        if tabla.is_header_row(fila_index) {
+            xml.push_str("<w:trPr><w:tblHeader/></w:trPr>");
+        }
         for celda in fila {
-            xml.push_str("<w:tc><w:p><w:r><w:t xml:space=\"preserve\">");
+            let alineacion = celda
+                .style
+                .as_ref()
+                .map(|style| match style.alignment {
+                    TableCellAlignment::Left => "left",
+                    TableCellAlignment::Center => "center",
+                    TableCellAlignment::Right => "right",
+                })
+                .unwrap_or_else(|| {
+                    if tabla.is_header_row(fila_index) {
+                        "center"
+                    } else {
+                        "left"
+                    }
+                });
+            let bold = if tabla.is_header_row(fila_index)
+                || celda
+                    .style
+                    .as_ref()
+                    .is_some_and(|style| style.is_emphasized)
+            {
+                "<w:b/>"
+            } else {
+                ""
+            };
+            xml.push_str("<w:tc><w:p><w:pPr><w:jc w:val=\"");
+            xml.push_str(alineacion);
+            xml.push_str("\"/></w:pPr><w:r><w:rPr>");
+            xml.push_str(bold);
+            xml.push_str("</w:rPr><w:t xml:space=\"preserve\">");
             xml.push_str(&escape_xml(&celda.content));
             xml.push_str("</w:t></w:r></w:p></w:tc>");
         }
@@ -1359,6 +1436,44 @@ fn docx_xml_tabla(tabla: &TableStructure) -> String {
 
     xml.push_str("</w:tbl>");
     xml
+}
+
+fn alignment_hint_from_table(alignment: TableCellAlignment) -> AlignmentHint {
+    match alignment {
+        TableCellAlignment::Left => AlignmentHint::Left,
+        TableCellAlignment::Center => AlignmentHint::Center,
+        TableCellAlignment::Right => AlignmentHint::Right,
+    }
+}
+
+fn latex_column_widths(tabla: &TableStructure, ancho_total_pt: f64, columnas: usize) -> Vec<f64> {
+    if tabla.column_widths.len() != columnas || tabla.column_widths.iter().all(|ancho| *ancho == 0)
+    {
+        let ancho_columna = (ancho_total_pt / columnas as f64).max(48.0);
+        return vec![ancho_columna; columnas];
+    }
+
+    let suma = tabla.column_widths.iter().sum::<u32>().max(1) as f64;
+    tabla
+        .column_widths
+        .iter()
+        .map(|ancho| ((ancho_total_pt * (*ancho as f64 / suma)).max(48.0)).min(ancho_total_pt))
+        .collect()
+}
+
+fn docx_table_column_widths(tabla: &TableStructure) -> Vec<u32> {
+    let columnas = tabla.num_cols.max(1) as usize;
+    if tabla.column_widths.len() != columnas || tabla.column_widths.iter().all(|ancho| *ancho == 0)
+    {
+        return vec![2400; columnas];
+    }
+
+    let suma = tabla.column_widths.iter().sum::<u32>().max(1) as f64;
+    tabla
+        .column_widths
+        .iter()
+        .map(|ancho| ((9600.0 * (*ancho as f64 / suma)).round().max(1200.0)) as u32)
+        .collect()
 }
 
 fn docx_xml_imagen(

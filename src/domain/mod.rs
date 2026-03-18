@@ -232,6 +232,10 @@ pub struct TableStructure {
     pub num_rows: u32,
     /// Numero total de columnas.
     pub num_cols: u32,
+    /// Filas que deben tratarse como encabezado lógico.
+    pub header_row_indices: Vec<u32>,
+    /// Anchuras relativas de columna en coordenadas de tabla.
+    pub column_widths: Vec<u32>,
 }
 
 impl TableStructure {
@@ -257,12 +261,18 @@ impl TableStructure {
         }
 
         let mut resultado = String::new();
+        let fila_header = self
+            .header_row_indices
+            .first()
+            .copied()
+            .unwrap_or(0)
+            .min(self.rows.len().saturating_sub(1) as u32) as usize;
 
         for (i, fila) in self.rows.iter().enumerate() {
             let celdas: Vec<String> = fila.iter().map(|c| c.content.clone()).collect();
             resultado.push_str(&format!("| {} |\n", celdas.join(" | ")));
 
-            if i == 0 {
+            if i == fila_header {
                 let separadores: Vec<String> = fila.iter().map(|_| "---".to_string()).collect();
                 resultado.push_str(&format!("| {} |\n", separadores.join(" | ")));
             }
@@ -295,6 +305,18 @@ impl TableStructure {
 
         resultado
     }
+
+    /// Indica si una fila debe tratarse como encabezado lógico.
+    pub fn is_header_row(&self, row_index: usize) -> bool {
+        self.header_row_indices
+            .iter()
+            .any(|indice| *indice as usize == row_index)
+    }
+
+    /// Retorna el ancho inferido para una columna si existe metadata suficiente.
+    pub fn column_width(&self, column_index: usize) -> Option<u32> {
+        self.column_widths.get(column_index).copied()
+    }
 }
 
 /// Celda lógica de una tabla con información de contenido y spans.
@@ -312,6 +334,25 @@ pub struct TableCell {
     pub col_span: u32,
     /// Rectangulo de la celda en coordenadas de la tabla.
     pub bounding_box: Rectangle,
+    /// Pistas de estilo opcionales derivadas del analizador tabular.
+    pub style: Option<TableCellStyle>,
+}
+
+/// Pistas mínimas de estilo para exportación tabular rica.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TableCellStyle {
+    /// Alineación sugerida dentro de la celda.
+    pub alignment: TableCellAlignment,
+    /// Indica si el contenido debe tratarse como encabezado fuerte.
+    pub is_emphasized: bool,
+}
+
+/// Alineación tabular neutral para DOCX, LaTeX y PDF.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum TableCellAlignment {
+    Left,
+    Center,
+    Right,
 }
 
 /// Bounding box axis-aligned expresado en píxeles absolutos.

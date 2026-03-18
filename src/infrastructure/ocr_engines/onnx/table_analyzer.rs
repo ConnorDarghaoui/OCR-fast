@@ -1,4 +1,4 @@
-use crate::domain::{Rectangle, TableCell, TableStructure};
+use crate::domain::{Rectangle, TableCell, TableCellAlignment, TableCellStyle, TableStructure};
 use crate::infrastructure::ocr_engines::onnx::preprocessing;
 use image::{DynamicImage, GenericImageView};
 use ort::session::Session;
@@ -149,6 +149,8 @@ impl TableAnalyzer {
                 rows: Vec::new(),
                 num_rows: 0,
                 num_cols: 0,
+                header_row_indices: Vec::new(),
+                column_widths: Vec::new(),
             };
         }
 
@@ -157,10 +159,19 @@ impl TableAnalyzer {
 
         let mut cols_ord: Vec<&&ComponenteTabla> = columnas.iter().collect();
         cols_ord.sort_by_key(|c| c.caja.x);
+        let header_row_indices = if filas_ord.is_empty() {
+            Vec::new()
+        } else {
+            vec![0]
+        };
+        let column_widths = cols_ord
+            .iter()
+            .map(|col| col.caja.width)
+            .collect::<Vec<_>>();
 
         let mut tabla_filas: Vec<Vec<TableCell>> = Vec::new();
 
-        for fila in &filas_ord {
+        for (fila_index, fila) in filas_ord.iter().enumerate() {
             let mut celdas: Vec<TableCell> = Vec::new();
             for col in &cols_ord {
                 celdas.push(TableCell {
@@ -173,6 +184,14 @@ impl TableAnalyzer {
                         width: col.caja.width,
                         height: fila.caja.height,
                     },
+                    style: Some(TableCellStyle {
+                        alignment: if fila_index == 0 {
+                            TableCellAlignment::Center
+                        } else {
+                            TableCellAlignment::Left
+                        },
+                        is_emphasized: fila_index == 0,
+                    }),
                 });
             }
             tabla_filas.push(celdas);
@@ -182,6 +201,8 @@ impl TableAnalyzer {
             rows: tabla_filas,
             num_rows: filas_ord.len() as u32,
             num_cols: cols_ord.len() as u32,
+            header_row_indices,
+            column_widths,
         }
     }
 }

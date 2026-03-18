@@ -405,7 +405,7 @@ mod exporter_tests {
     use encoding_rs::WINDOWS_1252;
     use ocrfast::domain::{
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
-        TableCell, TableStructure,
+        TableCell, TableCellAlignment, TableCellStyle, TableStructure,
     };
     use ocrfast::infrastructure::exporters::{
         DocxExporter, JsonExporter, LatexExporter, PdfReconstructedExporter, TxtExporter,
@@ -427,6 +427,8 @@ mod exporter_tests {
             Some(TableStructure {
                 num_rows: 2,
                 num_cols: 2,
+                header_row_indices: vec![0],
+                column_widths: vec![140, 80],
                 rows: vec![
                     vec![
                         TableCell {
@@ -439,6 +441,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Center,
+                                is_emphasized: true,
+                            }),
                         },
                         TableCell {
                             content: "Edad".to_string(),
@@ -450,6 +456,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Center,
+                                is_emphasized: true,
+                            }),
                         },
                     ],
                     vec![
@@ -463,6 +473,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Left,
+                                is_emphasized: false,
+                            }),
                         },
                         TableCell {
                             content: "30".to_string(),
@@ -474,6 +488,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Right,
+                                is_emphasized: false,
+                            }),
                         },
                     ],
                 ],
@@ -821,6 +839,15 @@ mod exporter_tests {
                 .any(|w| w == "Informe".as_bytes()),
             "El XML del documento debe contener el titulo exportado"
         );
+        assert!(
+            contenido
+                .windows("w:tblHeader".len())
+                .any(|w| w == b"w:tblHeader")
+                && contenido
+                    .windows("w:gridCol".len())
+                    .any(|w| w == b"w:gridCol"),
+            "El DOCX debe materializar header lógico y grid de columnas"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -866,6 +893,10 @@ mod exporter_tests {
         assert!(
             contenido.contains("\\begin{tabular}"),
             "La salida LaTeX debe materializar tablas"
+        );
+        assert!(
+            contenido.contains("\\textbf{Nombre}") && contenido.contains("p{"),
+            "La tabla LaTeX debe conservar encabezado fuerte y anchuras enriquecidas"
         );
 
         let assets = dir.join("output_assets");
