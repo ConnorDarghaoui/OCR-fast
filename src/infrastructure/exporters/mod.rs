@@ -25,6 +25,18 @@ const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
 const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
 /// Conversión aproximada de punto tipográfico a EMUs en DOCX.
 const EMUS_POR_PUNTO: u64 = 12_700;
+/// La fuente core Helvetica usa una caja de 1000 unidades por EM.
+const HELVETICA_UNIDADES_POR_EM: f64 = 1000.0;
+/// Fallback conservador mientras el camino Unicode siga sin fuente embebida.
+const HELVETICA_GLYPH_WIDTH_FALLBACK: u16 = 556;
+/// Métricas estándar de Helvetica para ASCII printable (32..=126).
+const HELVETICA_GLYPH_WIDTHS_ASCII: [u16; 95] = [
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556,
+    556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667,
+    611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667,
+    667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500,
+    222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+];
 
 /// Exportador de documentos OCR a texto plano legible por humanos.
 pub struct TxtExporter;
@@ -830,7 +842,17 @@ fn envolver_texto_para_pdf(texto: &str, ancho_pt: f64, font_size: f64) -> Vec<St
 }
 
 fn estimar_ancho_linea_pdf(texto: &str, font_size: f64) -> f64 {
-    texto.chars().count() as f64 * font_size * 0.52
+    texto.chars().map(ancho_glifo_helvetica).sum::<f64>() * (font_size / HELVETICA_UNIDADES_POR_EM)
+}
+
+fn ancho_glifo_helvetica(caracter: char) -> f64 {
+    let codigo = caracter as u32;
+    if (32..=126).contains(&codigo) {
+        let indice = (codigo - 32) as usize;
+        HELVETICA_GLYPH_WIDTHS_ASCII[indice] as f64
+    } else {
+        HELVETICA_GLYPH_WIDTH_FALLBACK as f64
+    }
 }
 
 fn crear_xobject_imagen_pdf(
@@ -1436,4 +1458,38 @@ fn crc32(bytes: &[u8]) -> u32 {
     }
 
     !crc
+}
+
+#[cfg(test)]
+mod pdf_metric_tests {
+    use super::{envolver_texto_para_pdf, estimar_ancho_linea_pdf};
+
+    #[test]
+    fn test_pdf_glyph_metrics_distingue_glifos_estrechos_y_anchos() {
+        let ancho_estrecho = estimar_ancho_linea_pdf("iiiii", 12.0);
+        let ancho_ancho = estimar_ancho_linea_pdf("WWWWW", 12.0);
+
+        assert!(
+            ancho_ancho > ancho_estrecho,
+            "Helvetica debe estimar mas ancho para W que para i"
+        );
+    }
+
+    #[test]
+    fn test_pdf_wrapping_usa_metricas_reales_de_glifos() {
+        let ancho_referencia = estimar_ancho_linea_pdf("iiiii iiiii", 12.0) + 0.5;
+        let lineas_estrechas = envolver_texto_para_pdf("iiiii iiiii", ancho_referencia, 12.0);
+        let lineas_anchas = envolver_texto_para_pdf("WWWWW WWWWW", ancho_referencia, 12.0);
+
+        assert_eq!(
+            lineas_estrechas.len(),
+            1,
+            "Dos palabras estrechas deben caber en el ancho de referencia"
+        );
+        assert_eq!(
+            lineas_anchas.len(),
+            2,
+            "El mismo ancho no debe acomodar dos palabras anchas"
+        );
+    }
 }
