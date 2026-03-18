@@ -20,7 +20,7 @@ use ratatui::{
 /// volumen por tick, manteniendo estable el coste del redraw.
 pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
     let hay_flash = aplicacion.obtener_estado().is_some();
-    let motor_degradado = aplicacion.motor_fallido;
+    let motor_degradado = aplicacion.motor_fallido();
     let alto_banner_motor: u16 = if motor_degradado { 1 } else { 0 };
 
     let mut constraints = vec![
@@ -324,15 +324,9 @@ fn renderizar_detalle_trabajo_enmarcado(
             marco.render_widget(parrafo, area);
             return;
         } else if trabajo.status == JobStatus::Processing {
-            let porcentaje = aplicacion
-                .progreso_actual
-                .get(&trabajo.id)
-                .copied()
-                .unwrap_or(0.0);
+            let porcentaje = aplicacion.progreso_trabajo(&trabajo.id).unwrap_or(0.0);
             let fase = aplicacion
-                .fase_actual
-                .get(&trabajo.id)
-                .map(|s| s.as_str())
+                .fase_trabajo(&trabajo.id)
                 .unwrap_or("Procesando...");
 
             let indicador = ratatui::widgets::Gauge::default()
@@ -382,17 +376,17 @@ fn renderizar_inicializacion(marco: &mut Frame, aplicacion: &AppState, area: Rec
     let glifos_carga = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let spinner = glifos_carga[(segundos % 10) as usize];
 
-    let porcentaje = (aplicacion.progreso_carga_motor * 100.0) as u16;
+    let porcentaje = (aplicacion.progreso_carga_motor() * 100.0) as u16;
 
-    let etiqueta = if aplicacion.bytes_carga_total > 0 {
+    let etiqueta = if aplicacion.bytes_carga_total() > 0 {
         format!(
             "{} — {:.0}/{:.0} MB",
-            aplicacion.fase_carga_motor,
-            aplicacion.bytes_carga_actual as f64 / 1_048_576.0,
-            aplicacion.bytes_carga_total as f64 / 1_048_576.0,
+            aplicacion.fase_carga_motor(),
+            aplicacion.bytes_carga_actual() as f64 / 1_048_576.0,
+            aplicacion.bytes_carga_total() as f64 / 1_048_576.0,
         )
     } else {
-        aplicacion.fase_carga_motor.clone()
+        aplicacion.fase_carga_motor().to_string()
     };
 
     let indicador = ratatui::widgets::Gauge::default()
@@ -407,15 +401,15 @@ fn renderizar_inicializacion(marco: &mut Frame, aplicacion: &AppState, area: Rec
 
     marco.render_widget(indicador, secciones[1]);
 
-    if !aplicacion.gpu_info.is_empty() {
-        let (color, prefijo) = if aplicacion.gpu_info.contains("activa") {
+    if !aplicacion.gpu_info().is_empty() {
+        let (color, prefijo) = if aplicacion.gpu_info().contains("activa") {
             (Color::Green, "⚡ ")
         } else {
             (Color::DarkGray, "— ")
         };
         let linea_gpu = Paragraph::new(Line::from(vec![
             Span::styled(prefijo, Style::default().fg(color)),
-            Span::styled(&aplicacion.gpu_info, Style::default().fg(color)),
+            Span::styled(aplicacion.gpu_info(), Style::default().fg(color)),
         ]))
         .alignment(Alignment::Center);
         marco.render_widget(linea_gpu, secciones[2]);

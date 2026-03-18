@@ -5,10 +5,11 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,12 +17,16 @@ env:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@c2a5a2bd6a758a0937f1ddb1e8950609867ed15c
         with:
           release-type: rust
           config-file: release-please-config.json
@@ -32,6 +37,8 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     needs: release-please
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +69,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Dependencias del sistema (Linux)
         if: runner.os == 'Linux'
@@ -71,12 +80,13 @@ jobs:
           sudo apt-get install -y pkg-config libssl-dev
 
       - name: Instalar Rust toolchain estable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache dependencias Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1
         with:
           shared-key: release-${{ matrix.target }}
           cache-directories: |
@@ -105,7 +115,7 @@ jobs:
           Compress-Archive -Path dist\* -DestinationPath "${{ matrix.asset }}.zip"
 
       - name: Subir artefacto
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}.${{ matrix.ext }}
@@ -123,7 +133,7 @@ jobs:
 
     steps:
       - name: Descargar artefactos
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
 
       - name: Adjuntar artefactos a la release creada por Release Please
         env:

@@ -1,14 +1,15 @@
 use crate::domain::errors::ExportError;
 use crate::domain::{
-    AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job, Page,
-    Rectangle, TableStructure,
+    AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job,
+    OutputFormat, Page, Rectangle, TableStructure,
 };
 use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
-use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort};
+use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort, JobExporterPort};
 use lopdf::dictionary;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
@@ -25,6 +26,55 @@ const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
 const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
 /// Conversión aproximada de punto tipográfico a EMUs en DOCX.
 const EMUS_POR_PUNTO: u64 = 12_700;
+
+/// Registro por defecto que resuelve exportadores concretos según `OutputFormat`.
+///
+/// La resolución vive en infraestructura para que la aplicación no dependa de
+/// constructores concretos ni replique el `match` en múltiples sitios.
+pub struct DefaultJobExporter {
+    txt: Arc<dyn ExporterPort>,
+    docx: Arc<dyn ExporterPort>,
+    latex: Arc<dyn ExporterPort>,
+    pdf: Arc<dyn ExporterPort>,
+    json: Arc<dyn ExporterPort>,
+}
+
+impl DefaultJobExporter {
+    /// Construye el registro con los exportadores integrados del producto.
+    pub fn new() -> Self {
+        Self {
+            txt: Arc::new(TxtExporter::new()),
+            docx: Arc::new(DocxExporter::new()),
+            latex: Arc::new(LatexExporter::new()),
+            pdf: Arc::new(PdfSandwichExporter::new()),
+            json: Arc::new(JsonExporter::new()),
+        }
+    }
+
+    /// Resuelve el exportador concreto para el formato indicado.
+    fn exportador_para(&self, formato: OutputFormat) -> &dyn ExporterPort {
+        match formato {
+            OutputFormat::Txt => self.txt.as_ref(),
+            OutputFormat::Docx => self.docx.as_ref(),
+            OutputFormat::Latex => self.latex.as_ref(),
+            OutputFormat::Pdf => self.pdf.as_ref(),
+            OutputFormat::Json => self.json.as_ref(),
+        }
+    }
+}
+
+impl Default for DefaultJobExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl JobExporterPort for DefaultJobExporter {
+    fn export_job(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
+        self.exportador_para(job.formato_salida)
+            .export(job, output_path)
+    }
+}
 
 /// Exportador de documentos OCR a texto plano legible por humanos.
 pub struct TxtExporter;
@@ -381,9 +431,8 @@ impl ExporterPort for PdfSandwichExporter {
             }
 
             let mut operaciones_texto: Vec<Operation> = Vec::new();
-            let bloques_con_texto: Vec<_> = pagina
-                .blocks
-                .iter()
+            let bloques_con_texto: Vec<_> = bloques_ordenados(pagina)
+                .into_iter()
                 .filter(|b| !b.content.trim().is_empty())
                 .collect();
 
@@ -1203,4 +1252,16 @@ fn crc32(bytes: &[u8]) -> u32 {
     }
 
     !crc
+}
+
+/// Retorna una vista estable de bloques ordenados por `reading_order`.
+fn bloques_ordenados(pagina: &Page) -> Vec<&crate::domain::Block> {
+    let mut bloques: Vec<_> = pagina.blocks.iter().collect();
+    bloques.sort_by(|a, b| {
+        a.reading_order
+            .cmp(&b.reading_order)
+            .then(a.bounding_box.y.cmp(&b.bounding_box.y))
+            .then(a.bounding_box.x.cmp(&b.bounding_box.x))
+    });
+    bloques
 }
