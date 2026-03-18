@@ -844,7 +844,7 @@ mod layout_engine_tests {
 
 #[cfg(test)]
 mod pipeline_cancelacion_tests {
-    use ocrfast::application::pipeline::{OcrPipeline, MSG_JOB_CANCELADO};
+    use ocrfast::application::pipeline::{OcrPipeline, PipelineFailure};
     use ocrfast::domain::ProcessingProfile;
     use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
     use ocrfast::infrastructure::ocr_engines::stub::StubOcrEngine;
@@ -871,10 +871,9 @@ mod pipeline_cancelacion_tests {
         );
 
         assert!(resultado.is_err(), "Pipeline cancelado debe retornar error");
-        assert_eq!(
-            resultado.err().unwrap().to_string(),
-            MSG_JOB_CANCELADO,
-            "El mensaje de error debe ser exactamente MSG_JOB_CANCELADO"
+        assert!(
+            matches!(resultado.err().unwrap(), PipelineFailure::Cancelado),
+            "La cancelacion debe expresarse con una variante tipada"
         );
     }
 
