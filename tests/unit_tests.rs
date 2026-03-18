@@ -277,6 +277,37 @@ mod infrastructure_tests {
     }
 
     #[test]
+    fn test_file_job_store_crea_directorios_padre() {
+        let directorio = tempfile::tempdir().expect("No se pudo crear directorio temporal");
+        let ruta = directorio
+            .path()
+            .join("estado")
+            .join("interno")
+            .join("jobs.json");
+        let store = FileJobStore::with_path(&ruta);
+
+        store.save(&job_de_prueba("nested-1")).unwrap();
+
+        assert!(ruta.exists());
+        assert!(ruta.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn test_file_job_store_reporta_json_corrupto() {
+        let directorio = tempfile::tempdir().expect("No se pudo crear directorio temporal");
+        let ruta = directorio.path().join("jobs.json");
+        std::fs::write(&ruta, "{ json invalido").expect("No se pudo escribir json corrupto");
+        let store = FileJobStore::with_path(&ruta);
+
+        let error = store
+            .list()
+            .expect_err("Se esperaba error por json corrupto");
+        let mensaje = error.to_string();
+
+        assert!(mensaje.contains("parseando jobs.json"));
+    }
+
+    #[test]
     fn test_normalizar_jobs_al_arranque_marca_processing_como_failed() {
         let mut jobs = vec![
             {
@@ -403,8 +434,9 @@ mod exporter_tests {
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableStructure,
     };
+    use ocrfast::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
     use ocrfast::infrastructure::exporters::{JsonExporter, MarkdownExporter};
-    use ocrfast::interfaces::ports::ExporterPort;
+    use ocrfast::interfaces::ports::{DocumentAssemblerPort, ExporterPort};
     use std::collections::HashMap;
 
     fn job_con_tabla(con_estructura: bool) -> Job {
@@ -569,6 +601,76 @@ mod exporter_tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&contenido).expect("El JSON generado debe ser valido");
         assert_eq!(parsed["id"], "job-exp");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_markdown_exporta_en_orden_de_lectura_canonico() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_md_order");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.md");
+
+        let mut job = job_con_tabla(false);
+        job.document.pages[0].blocks = vec![
+            Block {
+                block_type: BlockType::Text,
+                bounding_box: Rectangle {
+                    x: 180,
+                    y: 20,
+                    width: 80,
+                    height: 20,
+                },
+                content: "Columna derecha".to_string(),
+                confidence: 0.9,
+                embedded_image: None,
+                table_structure: None,
+                reading_order: 9,
+            },
+            Block {
+                block_type: BlockType::Title,
+                bounding_box: Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 280,
+                    height: 20,
+                },
+                content: "Titulo".to_string(),
+                confidence: 0.95,
+                embedded_image: None,
+                table_structure: None,
+                reading_order: 4,
+            },
+            Block {
+                block_type: BlockType::Text,
+                bounding_box: Rectangle {
+                    x: 10,
+                    y: 20,
+                    width: 80,
+                    height: 20,
+                },
+                content: "Columna izquierda".to_string(),
+                confidence: 0.9,
+                embedded_image: None,
+                table_structure: None,
+                reading_order: 7,
+            },
+        ];
+
+        LayoutGuidedDocumentAssembler::new()
+            .assemble(&mut job.document)
+            .unwrap();
+
+        let exporter = MarkdownExporter::new();
+        exporter.export(&job, &ruta).unwrap();
+
+        let contenido = std::fs::read_to_string(&ruta).unwrap();
+        let indice_titulo = contenido.find("### Titulo").unwrap();
+        let indice_izquierda = contenido.find("Columna izquierda").unwrap();
+        let indice_derecha = contenido.find("Columna derecha").unwrap();
+
+        assert!(indice_titulo < indice_izquierda);
+        assert!(indice_izquierda < indice_derecha);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -844,7 +946,7 @@ mod layout_engine_tests {
 
 #[cfg(test)]
 mod pipeline_cancelacion_tests {
-    use ocrfast::application::pipeline::{OcrPipeline, MSG_JOB_CANCELADO};
+    use ocrfast::application::pipeline::{OcrPipeline, PipelineFailure};
     use ocrfast::domain::ProcessingProfile;
     use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
     use ocrfast::infrastructure::ocr_engines::stub::StubOcrEngine;
@@ -871,10 +973,9 @@ mod pipeline_cancelacion_tests {
         );
 
         assert!(resultado.is_err(), "Pipeline cancelado debe retornar error");
-        assert_eq!(
-            resultado.err().unwrap().to_string(),
-            MSG_JOB_CANCELADO,
-            "El mensaje de error debe ser exactamente MSG_JOB_CANCELADO"
+        assert!(
+            matches!(resultado.err().unwrap(), PipelineFailure::Cancelado),
+            "La cancelacion debe expresarse con una variante tipada"
         );
     }
 
