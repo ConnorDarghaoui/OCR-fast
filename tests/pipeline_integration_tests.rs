@@ -2,10 +2,11 @@ use ocrfast::application::pipeline::{
     NoopRefinementPass, OcrPipeline, PipelineEvent, RefinementBudget, RefinementContext,
     RefinementPass, RefinementStage,
 };
-use ocrfast::domain::errors::OcrError;
+use ocrfast::domain::errors::{LayoutError, OcrError};
 use ocrfast::domain::{Document, DocumentBlueprint, ProcessingProfile};
 use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
+use ocrfast::interfaces::ports::DocumentAssemblerPort;
 use ocrfast::interfaces::ports::{OcrEnginePort, PostprocessorPort};
 use std::path::Path;
 use std::sync::{mpsc, Arc};
@@ -108,6 +109,41 @@ impl RefinementPass for RefinamientoRegistrador {
             ),
         );
         Ok(())
+    }
+}
+
+struct EnsambladorRegistrador {
+    llamado: std::sync::Mutex<bool>,
+}
+
+impl EnsambladorRegistrador {
+    fn new() -> Self {
+        Self {
+            llamado: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn fue_llamado(&self) -> bool {
+        *self.llamado.lock().unwrap()
+    }
+}
+
+impl DocumentAssemblerPort for EnsambladorRegistrador {
+    fn assemble(&self, document: &mut Document) -> Result<(), LayoutError> {
+        *self.llamado.lock().unwrap() = true;
+
+        for pagina in &mut document.pages {
+            pagina.blocks.reverse();
+            for (indice, bloque) in pagina.blocks.iter_mut().enumerate() {
+                bloque.reading_order = indice as u32;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "EnsambladorRegistrador"
     }
 }
 
@@ -376,4 +412,24 @@ fn test_pipeline_admite_noop_refinement_pass() {
         .expect("El NoopRefinementPass no debe romper la corrida");
 
     assert!(resultado.blueprint.is_some());
+}
+
+#[test]
+fn test_pipeline_invoca_ensamblador_documento() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let ensamblador = Arc::new(EnsambladorRegistrador::new());
+    let ensamblador_ref = Arc::clone(&ensamblador);
+
+    let pipeline = OcrPipeline::new(parser, ocr).with_document_assembler(ensamblador);
+
+    let ruta = Path::new("/tmp/doc_assembler.pdf");
+    pipeline
+        .procesar_documento(ruta, &ProcessingProfile::Balanced, None, None)
+        .expect("Pipeline debe completar ensamblado");
+
+    assert!(
+        ensamblador_ref.fue_llamado(),
+        "El ensamblador final debe ejecutarse al final del pipeline"
+    );
 }

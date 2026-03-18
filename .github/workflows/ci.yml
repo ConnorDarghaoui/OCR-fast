@@ -13,6 +13,8 @@ jobs:
   build-test:
     name: Build & Test — ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +33,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       # OpenSSL requerido por reqwest en Linux (build.rs + descarga de modelos)
       - name: Dependencias del sistema (Linux)
@@ -41,14 +45,15 @@ jobs:
           sudo apt-get install -y pkg-config libssl-dev
 
       - name: Instalar Rust toolchain estable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       # Cachear ~/.cargo/registry, ~/.cargo/git y target/
       # La cache incluye target/pdfium-download/ para evitar re-descargar pdfium
       - name: Cache dependencias Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1
         with:
           shared-key: ci-${{ matrix.target }}
           cache-directories: |

@@ -1,15 +1,16 @@
 use crate::domain::errors::{LayoutError, OcrError};
 use crate::domain::{Block, BlockType, Document, Page, ProcessingProfile, Rectangle};
-use crate::infrastructure::ocr_engines::onnx::gpu_config;
 use crate::infrastructure::ocr_engines::onnx::layout::DocLayoutYoloEngine;
-use crate::infrastructure::ocr_engines::onnx::model_downloader::ModelDownloader;
 use crate::infrastructure::ocr_engines::onnx::orientation::OrientationDetector;
+use crate::infrastructure::ocr_engines::onnx::runtime_provisioner::{
+    ModelRuntimeProvisioner, ProvisionedOnnxRuntime,
+};
 use crate::infrastructure::ocr_engines::onnx::table_analyzer::TableAnalyzer;
 use crate::infrastructure::ocr_engines::onnx::text_detection::TextDetector;
 use crate::infrastructure::ocr_engines::onnx::text_recognition::TextRecognizer;
 use crate::interfaces::ports::{LayoutEnginePort, OcrEnginePort};
 use image::{DynamicImage, GenericImageView};
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Engine OCR multi-etapa respaldado por un conjunto coordinado de modelos ONNX.
 ///
@@ -39,16 +40,22 @@ impl OnnxOcrEngine {
     /// Falla si la adquisición de modelos o la carga de cualquiera de los
     /// submodelos no puede completarse de forma consistente.
     pub fn new() -> Result<Self, OcrError> {
-        let _estado_gpu = gpu_config::inicializar(0);
-
-        let downloader =
-            ModelDownloader::new().map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
-
-        let ruta_modelos = downloader
-            .asegurar_todos_los_modelos(None, None)
+        let runtime = ModelRuntimeProvisioner::new()
+            .and_then(|provisioner| provisioner.provision(None, None, None))
             .map_err(|e| OcrError::ModelLoadError(e.to_string()))?;
 
-        Self::from_directory(&ruta_modelos)
+        Self::from_provisioned_runtime(&runtime)
+    }
+
+    /// Construye el engine a partir de un runtime ya aprovisionado.
+    ///
+    /// # Trade-offs
+    ///
+    /// Esta variante mantiene la inferencia desacoplada de red y filesystem. El
+    /// caller controla cuándo y cómo aprovisionar modelos sin que el engine
+    /// replique esa política dentro de su constructor.
+    pub fn from_provisioned_runtime(runtime: &ProvisionedOnnxRuntime) -> Result<Self, OcrError> {
+        Self::from_directory(runtime.ruta_modelos())
     }
 
     /// Construye el engine a partir de un directorio de modelos ya materializado.
@@ -57,7 +64,7 @@ impl OnnxOcrEngine {
     ///
     /// Recibir una ruta explícita separa bootstrap de artefactos de bootstrap de
     /// sesiones, lo que facilita tests y empaquetado offline.
-    pub fn from_directory(ruta_modelos: &PathBuf) -> Result<Self, OcrError> {
+    pub fn from_directory(ruta_modelos: &Path) -> Result<Self, OcrError> {
         log::info!("Cargando modelos ONNX desde: {:?}", ruta_modelos);
 
         let orientacion =
