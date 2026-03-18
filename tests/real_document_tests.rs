@@ -5,6 +5,7 @@ mod real_document_tests {
     use ocrfast::infrastructure::layout_engines::XyCutLayoutEngine;
     use ocrfast::infrastructure::ocr_engines::onnx::{
         engine::OnnxOcrEngine, model_downloader::ModelDownloader,
+        runtime_provisioner::ModelRuntimeProvisioner,
     };
     use ocrfast::infrastructure::parsers::pdfium::PdfiumParser;
     use ocrfast::infrastructure::postprocessors::TextPostprocessor;
@@ -61,9 +62,14 @@ mod real_document_tests {
         );
 
         let dir_modelos = downloader.directorio_base().to_path_buf();
+        let provisioner = ModelRuntimeProvisioner::with_downloader(downloader);
+        let runtime = provisioner
+            .provision(None, None, None)
+            .expect("No se pudo aprovisionar runtime ONNX con los modelos disponibles");
 
         let motor_ocr = Arc::new(
-            OnnxOcrEngine::from_directory(&dir_modelos, None)
+            OnnxOcrEngine::from_provisioned_runtime(&runtime)
+                .or_else(|_| OnnxOcrEngine::from_directory(&dir_modelos))
                 .expect("No se pudo inicializar OnnxOcrEngine con los modelos disponibles"),
         );
         let parser = Arc::new(PdfiumParser::new().expect("No se pudo inicializar PdfiumParser"));
