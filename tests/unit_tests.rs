@@ -868,6 +868,25 @@ mod exporter_tests {
             !xobjects.is_empty(),
             "La pagina debe contener el recorte de imagen del original"
         );
+        let primer_xobject_id = xobjects
+            .iter()
+            .next()
+            .and_then(|(_nombre, objeto)| objeto.as_reference().ok())
+            .expect("El XObject debe resolverse como referencia");
+        let stream = pdf
+            .get_object(primer_xobject_id)
+            .expect("El XObject debe existir")
+            .as_stream()
+            .expect("El XObject debe ser un stream de imagen");
+        assert_eq!(
+            stream
+                .dict
+                .get(b"Filter")
+                .expect("La imagen debe declarar un filtro")
+                .as_name()
+                .expect("El filtro debe ser un nombre"),
+            b"DCTDecode"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

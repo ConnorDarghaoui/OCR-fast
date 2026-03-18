@@ -27,6 +27,8 @@ const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
 const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
 /// Conversión aproximada de punto tipográfico a EMUs en DOCX.
 const EMUS_POR_PUNTO: u64 = 12_700;
+/// Calidad JPEG para recortes embebidos en PDF reconstruido.
+const PDF_IMAGE_JPEG_QUALITY: u8 = 82;
 /// La fuente core Helvetica usa una caja de 1000 unidades por EM.
 const HELVETICA_UNIDADES_POR_EM: f64 = 1000.0;
 /// Fallback conservador mientras el camino Unicode siga sin fuente embebida.
@@ -908,7 +910,10 @@ fn crear_xobject_imagen_pdf(
         image::load_from_memory(datos_imagen).map_err(|e| format!("Decodificacion: {e}"))?;
     let rgb = imagen_dyn.to_rgb8();
     let (ancho, alto) = rgb.dimensions();
-    let pixeles_raw = rgb.into_raw();
+    let mut jpeg = Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, PDF_IMAGE_JPEG_QUALITY)
+        .encode(&rgb, ancho, alto, image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("Codificacion JPEG: {e}"))?;
 
     let img_dict = lopdf::dictionary! {
         "Type" => "XObject",
@@ -917,9 +922,10 @@ fn crear_xobject_imagen_pdf(
         "Height" => alto as i64,
         "ColorSpace" => "DeviceRGB",
         "BitsPerComponent" => 8,
+        "Filter" => "DCTDecode",
     };
 
-    let img_stream = lopdf::Stream::new(img_dict, pixeles_raw);
+    let img_stream = lopdf::Stream::new(img_dict, jpeg.into_inner());
     let xobj_id = doc.add_object(img_stream);
     Ok((xobj_id, format!("Im{}", xobj_id.0)))
 }
