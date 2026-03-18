@@ -1,7 +1,13 @@
+/// Cadena opcional de refinamientos encadenables por etapa del pipeline.
+pub mod refinement;
+
 use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
 use crate::interfaces::ports::{
     DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort, OcrEnginePort,
     PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
+};
+pub use refinement::{
+    NoopRefinementPass, RefinementBudget, RefinementContext, RefinementPass, RefinementStage,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -79,6 +85,8 @@ pub struct OcrPipeline {
     table_analyzer: Option<Arc<dyn TableAnalyzerPort>>,
     postprocesador: Option<Arc<dyn PostprocessorPort>>,
     blueprint_builder: Option<Arc<dyn DocumentBlueprintBuilderPort>>,
+    refinement_passes: Vec<Arc<dyn RefinementPass>>,
+    refinement_budget: RefinementBudget,
 }
 
 impl OcrPipeline {
@@ -98,6 +106,8 @@ impl OcrPipeline {
             table_analyzer: None,
             postprocesador: None,
             blueprint_builder: None,
+            refinement_passes: Vec::new(),
+            refinement_budget: RefinementBudget::default(),
         }
     }
 
@@ -131,6 +141,18 @@ impl OcrPipeline {
         blueprint_builder: Arc<dyn DocumentBlueprintBuilderPort>,
     ) -> Self {
         self.blueprint_builder = Some(blueprint_builder);
+        self
+    }
+
+    /// Añade un pass de refinamiento opcional en la etapa declarada por el pass.
+    pub fn with_refinement_pass(mut self, refinement_pass: Arc<dyn RefinementPass>) -> Self {
+        self.refinement_passes.push(refinement_pass);
+        self
+    }
+
+    /// Configura el presupuesto máximo de passes por corrida del pipeline.
+    pub fn with_refinement_budget(mut self, refinement_budget: RefinementBudget) -> Self {
+        self.refinement_budget = refinement_budget;
         self
     }
 
@@ -181,6 +203,7 @@ impl OcrPipeline {
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<PipelineResult, Box<dyn std::error::Error + Send + Sync>> {
+        let mut refinement_consumidos = 0usize;
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -208,6 +231,16 @@ impl OcrPipeline {
         }
 
         self.verificar_cancelacion(cancelacion)?;
+        let mut blueprint = None;
+        self.ejecutar_refinamientos(
+            RefinementStage::BeforeLayout,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            &mut refinement_consumidos,
+        )?;
 
         if let Some(ref layout_engine) = self.layout_engine {
             self.notificar(
@@ -278,8 +311,17 @@ impl OcrPipeline {
         }
 
         self.verificar_cancelacion(cancelacion)?;
+        self.ejecutar_refinamientos(
+            RefinementStage::BeforeBlueprint,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            &mut refinement_consumidos,
+        )?;
 
-        let blueprint = if let Some(ref blueprint_builder) = self.blueprint_builder {
+        blueprint = if let Some(ref blueprint_builder) = self.blueprint_builder {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
@@ -296,6 +338,16 @@ impl OcrPipeline {
         } else {
             None
         };
+
+        self.ejecutar_refinamientos(
+            RefinementStage::AfterBlueprint,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            &mut refinement_consumidos,
+        )?;
 
         self.notificar(
             notificador,
@@ -329,5 +381,69 @@ impl OcrPipeline {
         if let Some(tx) = notificador {
             let _ = tx.send(evento);
         }
+    }
+
+    fn ejecutar_refinamientos(
+        &self,
+        stage: RefinementStage,
+        documento: &mut Document,
+        blueprint: &mut Option<DocumentBlueprint>,
+        ruta: &Path,
+        perfil: &ProcessingProfile,
+        notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
+        refinement_consumidos: &mut usize,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.refinement_passes.is_empty() {
+            return Ok(());
+        }
+
+        let total_paginas = documento.pages.len() as u32;
+        for refinement_pass in self
+            .refinement_passes
+            .iter()
+            .filter(|pass| pass.stage() == stage)
+        {
+            if !self.refinement_budget.allows(*refinement_consumidos) {
+                log::info!(
+                    "Pipeline: presupuesto de refinamiento agotado antes de {}",
+                    refinement_pass.name()
+                );
+                break;
+            }
+
+            self.notificar(
+                notificador,
+                PipelineEvent::FaseCambiada {
+                    fase: format!("Refinando documento ({})", refinement_pass.name()),
+                    progreso: progreso_refinamiento(stage),
+                },
+            );
+
+            let contexto = RefinementContext {
+                source_path: ruta,
+                profile: perfil,
+                total_pages: total_paginas,
+                stage,
+                consumed_passes: *refinement_consumidos,
+                remaining_passes: self.refinement_budget.remaining(*refinement_consumidos),
+            };
+
+            refinement_pass.refine(documento, blueprint, &contexto)?;
+            *refinement_consumidos += 1;
+            log::info!(
+                "Pipeline: refinamiento completado ({})",
+                refinement_pass.name()
+            );
+        }
+
+        Ok(())
+    }
+}
+
+fn progreso_refinamiento(stage: RefinementStage) -> f32 {
+    match stage {
+        RefinementStage::BeforeLayout => 0.22,
+        RefinementStage::BeforeBlueprint => 0.93,
+        RefinementStage::AfterBlueprint => 0.985,
     }
 }

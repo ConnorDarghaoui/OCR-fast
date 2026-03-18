@@ -1,6 +1,10 @@
-use ocrfast::application::pipeline::{OcrPipeline, PipelineEvent};
+use ocrfast::application::pipeline::{
+    NoopRefinementPass, OcrPipeline, PipelineEvent, RefinementBudget, RefinementContext,
+    RefinementPass, RefinementStage,
+};
 use ocrfast::domain::errors::OcrError;
-use ocrfast::domain::{Document, ProcessingProfile};
+use ocrfast::domain::{Document, DocumentBlueprint, ProcessingProfile};
+use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
 use ocrfast::interfaces::ports::{OcrEnginePort, PostprocessorPort};
 use std::path::Path;
@@ -47,6 +51,62 @@ impl PostprocesadorRegistrador {
 impl PostprocessorPort for PostprocesadorRegistrador {
     fn postprocess(&self, _document: &mut Document) -> Result<(), OcrError> {
         *self.llamado.lock().unwrap() = true;
+        Ok(())
+    }
+}
+
+struct RefinamientoRegistrador {
+    stage: RefinementStage,
+    nombre: &'static str,
+    llamado: std::sync::Mutex<u32>,
+    vio_blueprint: std::sync::Mutex<bool>,
+}
+
+impl RefinamientoRegistrador {
+    fn new(stage: RefinementStage, nombre: &'static str) -> Self {
+        Self {
+            stage,
+            nombre,
+            llamado: std::sync::Mutex::new(0),
+            vio_blueprint: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn llamadas(&self) -> u32 {
+        *self.llamado.lock().unwrap()
+    }
+
+    fn vio_blueprint(&self) -> bool {
+        *self.vio_blueprint.lock().unwrap()
+    }
+}
+
+impl RefinementPass for RefinamientoRegistrador {
+    fn stage(&self) -> RefinementStage {
+        self.stage
+    }
+
+    fn name(&self) -> &str {
+        self.nombre
+    }
+
+    fn refine(
+        &self,
+        document: &mut Document,
+        blueprint: &mut Option<DocumentBlueprint>,
+        context: &RefinementContext<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        *self.llamado.lock().unwrap() += 1;
+        if blueprint.is_some() {
+            *self.vio_blueprint.lock().unwrap() = true;
+        }
+        document.metadata.insert(
+            format!("refinement:{}", self.nombre),
+            format!(
+                "{:?}:{}:{}",
+                context.stage, context.consumed_passes, context.remaining_passes
+            ),
+        );
         Ok(())
     }
 }
@@ -190,4 +250,130 @@ fn test_pipeline_confianza_en_rango_valido() {
             );
         }
     }
+}
+
+#[test]
+fn test_pipeline_invoca_refinement_pass_despues_del_blueprint() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let refinamiento = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::AfterBlueprint,
+        "after-blueprint",
+    ));
+    let refinamiento_ref = Arc::clone(&refinamiento);
+
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
+        .with_refinement_pass(refinamiento)
+        .with_refinement_budget(RefinementBudget::new(2));
+
+    let resultado = pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_refinement_after_blueprint.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe completar refinamiento tras blueprint");
+
+    assert!(resultado.blueprint.is_some());
+    assert_eq!(refinamiento_ref.llamadas(), 1);
+    assert!(refinamiento_ref.vio_blueprint());
+    assert_eq!(
+        resultado
+            .document
+            .metadata
+            .get("refinement:after-blueprint")
+            .map(String::as_str),
+        Some("AfterBlueprint:0:2")
+    );
+}
+
+#[test]
+fn test_pipeline_refinement_budget_limita_passes() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let primer_pass = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::AfterBlueprint,
+        "primero",
+    ));
+    let segundo_pass = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::AfterBlueprint,
+        "segundo",
+    ));
+    let primer_ref = Arc::clone(&primer_pass);
+    let segundo_ref = Arc::clone(&segundo_pass);
+
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
+        .with_refinement_pass(primer_pass)
+        .with_refinement_pass(segundo_pass)
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_refinement_budget.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe respetar presupuesto de refinamiento");
+
+    assert_eq!(primer_ref.llamadas(), 1);
+    assert_eq!(segundo_ref.llamadas(), 0);
+}
+
+#[test]
+fn test_pipeline_invoca_refinement_pass_antes_del_blueprint_sin_builder() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let refinamiento = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::BeforeBlueprint,
+        "before-blueprint",
+    ));
+    let refinamiento_ref = Arc::clone(&refinamiento);
+
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_refinement_pass(refinamiento)
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let documento = pipeline
+        .procesar_documento(
+            Path::new("/tmp/doc_refinement_before_blueprint.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe permitir refinamiento sin blueprint");
+
+    assert_eq!(refinamiento_ref.llamadas(), 1);
+    assert!(!refinamiento_ref.vio_blueprint());
+    assert_eq!(
+        documento
+            .metadata
+            .get("refinement:before-blueprint")
+            .map(String::as_str),
+        Some("BeforeBlueprint:0:1")
+    );
+}
+
+#[test]
+fn test_pipeline_admite_noop_refinement_pass() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
+        .with_refinement_pass(Arc::new(NoopRefinementPass::default()))
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let resultado = pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_refinement_noop.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("El NoopRefinementPass no debe romper la corrida");
+
+    assert!(resultado.blueprint.is_some());
 }
