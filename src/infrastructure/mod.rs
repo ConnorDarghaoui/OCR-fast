@@ -1,3 +1,5 @@
+/// Reconstrucción final del documento guiada por layout.
+pub mod document_assemblers;
 /// Builders de representación visual para exportación de alta fidelidad.
 pub mod document_blueprints;
 /// Adaptadores concretos de parsing y render de documentos.
@@ -15,7 +17,9 @@ pub mod postprocessors;
 /// Transformaciones raster previas a inferencia.
 pub mod preprocessors;
 
-/// Reexporta exportadores concretos para integración directa.
+/// Reexporta ensambladores de documento concretos.
+pub use document_assemblers::*;
+/// Reexporta builders de blueprint listos para integración directa.
 pub use document_blueprints::*;
 /// Reexporta exportadores concretos para integración directa.
 pub use exporters::*;
