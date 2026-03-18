@@ -7,7 +7,8 @@ use crate::interfaces::ports::{
     PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
 };
 pub use refinement::{
-    NoopRefinementPass, RefinementBudget, RefinementContext, RefinementPass, RefinementStage,
+    ConfidenceBoostPass, DenoisePass, DeskewPass, NoopRefinementPass, RefinementBudget,
+    RefinementContext, RefinementPass, RefinementStage,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;

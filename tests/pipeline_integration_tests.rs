@@ -1,12 +1,16 @@
 use ocrfast::application::pipeline::{
-    NoopRefinementPass, OcrPipeline, PipelineEvent, RefinementBudget, RefinementContext,
-    RefinementPass, RefinementStage,
+    ConfidenceBoostPass, NoopRefinementPass, OcrPipeline, PipelineEvent, RefinementBudget,
+    RefinementContext, RefinementPass, RefinementStage,
 };
+use ocrfast::domain::errors::DocumentError;
 use ocrfast::domain::errors::OcrError;
-use ocrfast::domain::{Document, DocumentBlueprint, ProcessingProfile};
+use ocrfast::domain::{
+    Block, BlockType, Dimensions, Document, DocumentBlueprint, Page, ProcessingProfile, Rectangle,
+};
 use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
-use ocrfast::interfaces::ports::{OcrEnginePort, PostprocessorPort};
+use ocrfast::interfaces::ports::{DocumentParserPort, OcrEnginePort, PostprocessorPort};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 
@@ -108,6 +112,95 @@ impl RefinementPass for RefinamientoRegistrador {
             ),
         );
         Ok(())
+    }
+}
+
+struct ParserBloquesDebiles;
+
+impl DocumentParserPort for ParserBloquesDebiles {
+    fn parse(&self, path: &Path) -> Result<Document, DocumentError> {
+        Ok(Document {
+            id: "doc-low-confidence".to_string(),
+            source_path: path.to_path_buf(),
+            pages: vec![Page {
+                number: 1,
+                dimensions: Dimensions {
+                    width: 1200,
+                    height: 1600,
+                },
+                blocks: vec![
+                    Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 100,
+                            y: 120,
+                            width: 500,
+                            height: 140,
+                        },
+                        content: String::new(),
+                        confidence: 0.0,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
+                    },
+                    Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 100,
+                            y: 320,
+                            width: 500,
+                            height: 140,
+                        },
+                        content: String::new(),
+                        confidence: 0.0,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 1,
+                    },
+                ],
+                image_data: None,
+            }],
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+struct OcrEngineDeRefuerzo;
+
+impl OcrEnginePort for OcrEngineDeRefuerzo {
+    fn process(
+        &self,
+        document: &mut Document,
+        profile: &ProcessingProfile,
+    ) -> Result<(), OcrError> {
+        let bloques = &mut document.pages[0].blocks;
+        match profile {
+            ProcessingProfile::Balanced => {
+                bloques[0].content = "texto borroso".to_string();
+                bloques[0].confidence = 0.42;
+                bloques[1].content = "texto estable".to_string();
+                bloques[1].confidence = 0.93;
+            }
+            ProcessingProfile::Accurate => {
+                bloques[0].content = "texto corregido".to_string();
+                bloques[0].confidence = 0.89;
+                bloques[1].content = "texto estable".to_string();
+                bloques[1].confidence = 0.94;
+            }
+            ProcessingProfile::Fast => {
+                bloques[0].content = "texto rapido".to_string();
+                bloques[0].confidence = 0.35;
+                bloques[1].content = "texto estable".to_string();
+                bloques[1].confidence = 0.80;
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "OcrEngineDeRefuerzo"
     }
 }
 
@@ -376,4 +469,39 @@ fn test_pipeline_admite_noop_refinement_pass() {
         .expect("El NoopRefinementPass no debe romper la corrida");
 
     assert!(resultado.blueprint.is_some());
+}
+
+#[test]
+fn test_pipeline_confidence_boost_mejora_solo_bloques_debiles() {
+    let parser = Arc::new(ParserBloquesDebiles);
+    let ocr: Arc<dyn OcrEnginePort> = Arc::new(OcrEngineDeRefuerzo);
+
+    let pipeline = OcrPipeline::new(parser, Arc::clone(&ocr))
+        .with_refinement_pass(Arc::new(ConfidenceBoostPass::with_config(
+            ocr,
+            0.78,
+            0.05,
+            ProcessingProfile::Accurate,
+        )))
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let documento = pipeline
+        .procesar_documento(
+            Path::new("/tmp/doc_refinement_confidence_boost.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe aplicar el refuerzo OCR");
+
+    assert_eq!(documento.pages[0].blocks[0].content, "texto corregido");
+    assert!(
+        (documento.pages[0].blocks[0].confidence - 0.89).abs() < f64::EPSILON,
+        "El bloque debil debe adoptar el OCR de mayor confianza"
+    );
+    assert_eq!(documento.pages[0].blocks[1].content, "texto estable");
+    assert!(
+        (documento.pages[0].blocks[1].confidence - 0.93).abs() < f64::EPSILON,
+        "El bloque ya confiable no debe reescribirse por una mejora marginal"
+    );
 }
