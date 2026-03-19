@@ -3,11 +3,14 @@ use crate::domain::Document;
 use crate::infrastructure::page_composer::PageComposer;
 use crate::interfaces::ports::DocumentAssemblerPort;
 
-/// Adaptador histórico hacia el compositor unificado por página.
+/// Adaptador histórico hacia el compositor canónico por página.
 ///
 /// El ensamblador ya no define heurísticas propias. Se conserva para pruebas y
 /// compatibilidad, pero delega en `PageComposer` para fijar el orden de lectura
 /// in-place sobre el `Document`.
+///
+/// Este módulo no debe volver a convertirse en dueño de la política de orden.
+/// Si la composición cambia, el cambio pertenece a `PageComposer`.
 pub struct LayoutGuidedDocumentAssembler {
     composer: PageComposer,
 }

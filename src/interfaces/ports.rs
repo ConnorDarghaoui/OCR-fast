@@ -186,12 +186,16 @@ pub trait TableAnalyzerPort: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Contrato para reconstrucción visual posterior a OCR y layout.
+/// Contrato legacy para reconstrucción visual posterior a OCR y layout.
+///
+/// Este puerto se mantiene por compatibilidad con tests y callers históricos.
+/// La implementación canónica de composición ahora vive en `PageComposerPort`.
 ///
 /// El builder traduce el árbol crudo del dominio a una representación intermedia
-/// orientada a exportadores ricos como LaTeX o PDF reconstruido. Esta fase
-/// existe para evitar que cada exportador reimplante heurísticas de columnas,
-/// anclas visuales y preservación de imágenes.
+/// orientada a exportadores ricos como LaTeX o PDF reconstruido, pero ya no
+/// debería contener heurística propia. Si se necesita cambiar política de
+/// página, orden o modo visual/documental, el cambio debe ocurrir en
+/// `PageComposerPort` y este puerto solo debería delegar.
 ///
 /// # Trade-offs
 ///
@@ -211,10 +215,13 @@ pub trait DocumentBlueprintBuilderPort: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Contrato para ensamblar el documento final a partir del layout detectado.
+/// Contrato legacy para ensamblar el documento final a partir del layout detectado.
 ///
-/// Esta fase toma bloques ya segmentados y enriquecidos por OCR para imponer una
-/// secuencia de lectura canónica antes de exportar o serializar resultados.
+/// Este puerto se mantiene por compatibilidad. La política canónica de orden y
+/// composición ahora vive en `PageComposerPort`.
+///
+/// No debería seguir ganando heurísticas nuevas; su papel es delegar en el
+/// compositor unificado mientras existan callers antiguos.
 pub trait DocumentAssemblerPort: Send + Sync {
     /// Reordena y normaliza el documento para consumo final.
     fn assemble(&self, document: &mut Document) -> Result<(), LayoutError>;
@@ -222,11 +229,20 @@ pub trait DocumentAssemblerPort: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Contrato único de composición por página para exportación rica.
+/// Contrato canónico de composición por página para exportación rica.
 ///
 /// Este puerto colapsa la responsabilidad histórica de ensamblar y luego
 /// reconstruir un blueprint. La implementación decide el modo efectivo por
 /// página, fija el orden de lectura y proyecta un modelo visual estable.
+///
+/// Cualquier decisión nueva sobre:
+/// - `ProcessingMode`
+/// - orden de lectura
+/// - hints de encabezado/pie
+/// - política visual vs documental
+///
+/// debe entrar aquí primero. Los exportadores deben consumir su resultado, no
+/// reimplementar la política.
 pub trait PageComposerPort: Send + Sync {
     /// Compone el documento a un modelo visual listo para render.
     fn compose(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError>;

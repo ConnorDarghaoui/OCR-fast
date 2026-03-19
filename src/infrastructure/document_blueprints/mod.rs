@@ -11,11 +11,15 @@ pub use crate::infrastructure::page_composer::{
     persistir_modos_procesamiento_por_pagina as persist_page_processing_modes,
 };
 
-/// Adaptador de compatibilidad hacia la nueva composición por página.
+/// Adaptador de compatibilidad hacia la composición canónica por página.
 ///
 /// La lógica de reconstrucción visual ya no vive aquí. `HighFidelityBlueprintBuilder`
 /// se conserva como fachada estable para pruebas y llamadas existentes, pero
 /// delega completamente en `PageComposer`.
+///
+/// No se deben añadir heurísticas nuevas a este módulo. Si aparece una nueva
+/// regla de composición, debe implementarse en `PageComposer` y este adaptador
+/// debe seguir siendo fino.
 pub struct HighFidelityBlueprintBuilder {
     composer: PageComposer,
 }
