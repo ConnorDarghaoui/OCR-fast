@@ -64,7 +64,7 @@ These invariants must hold during and after the refactor:
 
 3. Preprocessing ownership
    - `PreprocessorPort` already exists.
-   - `DenoisePass` and `DeskewPass` duplicate page-level image transformation.
+   - raster cleanup no longer lives in `refinement`; it belongs to `PreprocessorPort`.
 
 4. Public API ownership
    - `PageComposer` is the concrete page-composition API.
@@ -117,7 +117,7 @@ Those items stay out of scope on purpose.
 The target logical flow is:
 
 1. `Parse`
-2. `Preprocess` (optional but only for page-level image transforms)
+2. `Raster` (optional page-level cleanup through `PreprocessorPort`)
 3. `OcrEngine` integrated processing
 4. `BlockAutomata` resolution
 5. `PageComposer` composition

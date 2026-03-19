@@ -9,8 +9,7 @@ use crate::interfaces::ports::{
     DocumentParserPort, OcrEnginePort, PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
 };
 pub use refinement::{
-    DenoisePass, DeskewPass, NoopRefinementPass, RefinementBudget, RefinementContext,
-    RefinementPass, RefinementStage,
+    NoopRefinementPass, RefinementBudget, RefinementContext, RefinementPass, RefinementStage,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -24,11 +23,11 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineStage {
     Parseo,
-    Preprocesamiento,
+    Raster,
     Ocr,
     Tablas,
-    Postproceso,
-    Blueprint,
+    Texto,
+    Composicion,
     Refinamiento,
 }
 
@@ -36,11 +35,11 @@ impl std::fmt::Display for PipelineStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let nombre = match self {
             Self::Parseo => "parseo",
-            Self::Preprocesamiento => "preprocesamiento",
+            Self::Raster => "raster",
             Self::Ocr => "ocr",
             Self::Tablas => "tablas",
-            Self::Postproceso => "postproceso",
-            Self::Blueprint => "blueprint",
+            Self::Texto => "texto",
+            Self::Composicion => "composicion",
             Self::Refinamiento => "refinamiento",
         };
 
@@ -262,20 +261,20 @@ impl OcrPipeline {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
-                    fase: "Preprocesando imagenes".to_string(),
+                    fase: "Preparando raster".to_string(),
                     progreso: 0.15,
                 },
             );
             preprocesador
                 .preprocess(&mut documento)
-                .map_err(|error| Self::error_fase(PipelineStage::Preprocesamiento, error))?;
-            log::info!("Pipeline: preprocesamiento completado");
+                .map_err(|error| Self::error_fase(PipelineStage::Raster, error))?;
+            log::info!("Pipeline: preparacion raster completada");
         }
 
         self.verificar_cancelacion(cancelacion)?;
         let mut blueprint = None;
         self.ejecutar_refinamientos(
-            RefinementStage::BeforeLayout,
+            RefinementStage::BeforeOcr,
             &mut documento,
             &mut blueprint,
             ruta,
@@ -315,13 +314,13 @@ impl OcrPipeline {
                 .iter()
                 .any(|p| p.blocks.iter().any(|b| b.block_type == BlockType::Table));
             if hay_tablas {
-                self.notificar(
-                    notificador,
-                    PipelineEvent::FaseCambiada {
-                        fase: "Analizando tablas".to_string(),
-                        progreso: 0.75,
-                    },
-                );
+            self.notificar(
+                notificador,
+                PipelineEvent::FaseCambiada {
+                    fase: "Resolviendo tablas".to_string(),
+                    progreso: 0.75,
+                },
+            );
                 table_analyzer
                     .analyze_tables(&mut documento)
                     .map_err(|error| Self::error_fase(PipelineStage::Tablas, error))?;
@@ -335,14 +334,14 @@ impl OcrPipeline {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
-                    fase: "Postprocesando texto".to_string(),
+                    fase: "Normalizando texto".to_string(),
                     progreso: 0.90,
                 },
             );
             postprocesador
                 .postprocess(&mut documento)
-                .map_err(|error| Self::error_fase(PipelineStage::Postproceso, error))?;
-            log::info!("Pipeline: postprocesamiento completado");
+                .map_err(|error| Self::error_fase(PipelineStage::Texto, error))?;
+            log::info!("Pipeline: normalizacion de texto completada");
         }
 
         self.verificar_cancelacion(cancelacion)?;
@@ -361,7 +360,7 @@ impl OcrPipeline {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
-                    fase: "Reconstruyendo blueprint visual".to_string(),
+                    fase: "Componiendo paginas".to_string(),
                     progreso: 0.97,
                 },
             );
@@ -401,8 +400,8 @@ impl OcrPipeline {
     ) -> Result<DocumentBlueprint, PipelineFailure> {
         let blueprint = PageComposer::new()
             .compose(documento)
-            .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
-        log::info!("Pipeline: blueprint visual completado (PageComposer)");
+            .map_err(|error| Self::error_fase(PipelineStage::Composicion, error))?;
+        log::info!("Pipeline: composicion de paginas completada (PageComposer)");
         Ok(blueprint)
     }
 
@@ -469,7 +468,7 @@ impl OcrPipeline {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
-                    fase: format!("Refinando documento ({})", refinement_pass.name()),
+                    fase: format!("Aplicando ajuste opcional ({})", refinement_pass.name()),
                     progreso: progreso_refinamiento(stage),
                 },
             );
@@ -510,7 +509,7 @@ impl OcrPipeline {
 
 fn progreso_refinamiento(stage: RefinementStage) -> f32 {
     match stage {
-        RefinementStage::BeforeLayout => 0.22,
+        RefinementStage::BeforeOcr => 0.22,
         RefinementStage::AfterOcr => 0.62,
         RefinementStage::BeforeBlueprint => 0.93,
         RefinementStage::AfterBlueprint => 0.985,

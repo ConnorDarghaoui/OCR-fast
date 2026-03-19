@@ -1,8 +1,5 @@
 use crate::domain::{Document, DocumentBlueprint, ProcessingProfile};
-use crate::infrastructure::preprocessors::ImagePreprocessor;
-use crate::interfaces::ports::PreprocessorPort;
 use std::path::Path;
-use std::sync::Arc;
 
 /// Error propagable desde un pass de refinamiento hacia la orquestación.
 pub type RefinementError = Box<dyn std::error::Error + Send + Sync>;
@@ -14,8 +11,8 @@ pub type RefinementError = Box<dyn std::error::Error + Send + Sync>;
 /// explícitamente la frontera donde aporta valor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefinementStage {
-    /// Corre sobre el documento parseado y preprocesado, antes de layout.
-    BeforeLayout,
+    /// Corre sobre el documento parseado y preparado, antes del OCR principal.
+    BeforeOcr,
     /// Corre tras OCR, antes de tablas y postproceso.
     AfterOcr,
     /// Corre tras OCR, tablas y postproceso, antes de construir el blueprint.
@@ -117,11 +114,11 @@ pub trait RefinementPass: Send + Sync {
     ) -> Result<(), RefinementError>;
 }
 
-/// `refinement.rs` queda reservado para limpieza y transformaciones de página.
+/// `refinement.rs` queda reservado para hooks opcionales del pipeline.
 ///
-/// Los mecanismos caros de recuperación OCR no viven aquí más. Para ese caso se
-/// debe usar `application::pipeline::recovery`, que deja explícito que se trata
-/// de una ruta opt-in y no del camino principal del producto.
+/// La limpieza raster canónica vive en `PreprocessorPort` y las recuperaciones
+/// OCR costosas viven en `application::pipeline::recovery`. Este módulo ya no
+/// debe duplicar transformaciones de imagen ni rutas de recuperación.
 
 /// Pass inerte para validar cableado y presupuesto sin alterar la salida.
 ///
@@ -163,223 +160,5 @@ impl RefinementPass for NoopRefinementPass {
         _context: &RefinementContext<'_>,
     ) -> Result<(), RefinementError> {
         Ok(())
-    }
-}
-
-/// Pass de limpieza suave para reducir ruido previo a layout y OCR.
-///
-/// La implementación reutiliza el preprocesador raster del sistema con una
-/// configuración restringida solo a denoise. Mantenerlo como pass separado
-/// permite activarlo únicamente en corridas donde el coste extra se justifica.
-pub struct DenoisePass {
-    preprocessor: Arc<dyn PreprocessorPort>,
-}
-
-impl DenoisePass {
-    /// Construye el pass con la política de ruido por defecto del producto.
-    pub fn new() -> Self {
-        Self::with_preprocessor(Arc::new(ImagePreprocessor::with_config(
-            false, false, true, 300,
-        )))
-    }
-
-    /// Inyecta un preprocesador alternativo para pruebas o tuning avanzado.
-    pub fn with_preprocessor(preprocessor: Arc<dyn PreprocessorPort>) -> Self {
-        Self { preprocessor }
-    }
-}
-
-impl Default for DenoisePass {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RefinementPass for DenoisePass {
-    fn stage(&self) -> RefinementStage {
-        RefinementStage::BeforeLayout
-    }
-
-    fn name(&self) -> &str {
-        "DenoisePass"
-    }
-
-    fn refine(
-        &self,
-        document: &mut Document,
-        _blueprint: &mut Option<DocumentBlueprint>,
-        _context: &RefinementContext<'_>,
-    ) -> Result<(), RefinementError> {
-        self.preprocessor.preprocess(document)?;
-        Ok(())
-    }
-}
-
-/// Pass de corrección geométrica para reducir inclinación global de página.
-///
-/// Deskew corre antes de layout porque un error angular pequeño deforma la
-/// detección de columnas, líneas y tablas para todas las etapas posteriores.
-pub struct DeskewPass {
-    preprocessor: Arc<dyn PreprocessorPort>,
-}
-
-impl DeskewPass {
-    /// Construye el pass con la política de deskew por defecto del producto.
-    pub fn new() -> Self {
-        Self::with_preprocessor(Arc::new(ImagePreprocessor::with_config(
-            false, true, false, 300,
-        )))
-    }
-
-    /// Inyecta un preprocesador alternativo para pruebas o tuning avanzado.
-    pub fn with_preprocessor(preprocessor: Arc<dyn PreprocessorPort>) -> Self {
-        Self { preprocessor }
-    }
-}
-
-impl Default for DeskewPass {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RefinementPass for DeskewPass {
-    fn stage(&self) -> RefinementStage {
-        RefinementStage::BeforeLayout
-    }
-
-    fn name(&self) -> &str {
-        "DeskewPass"
-    }
-
-    fn refine(
-        &self,
-        document: &mut Document,
-        _blueprint: &mut Option<DocumentBlueprint>,
-        _context: &RefinementContext<'_>,
-    ) -> Result<(), RefinementError> {
-        self.preprocessor.preprocess(document)?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::{Dimensions, Page};
-    use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgb};
-    use std::collections::HashMap;
-    use std::io::Cursor;
-
-    fn documento_con_imagen(image_data: Vec<u8>) -> Document {
-        Document {
-            id: "doc".to_string(),
-            source_path: Path::new("/tmp/doc.png").to_path_buf(),
-            pages: vec![Page {
-                number: 1,
-                dimensions: Dimensions {
-                    width: 64,
-                    height: 64,
-                },
-                blocks: vec![],
-                image_data: Some(image_data),
-            }],
-            metadata: HashMap::new(),
-        }
-    }
-
-    fn png_desde_imagen(imagen: DynamicImage) -> Vec<u8> {
-        let mut buffer = Cursor::new(Vec::new());
-        imagen
-            .write_to(&mut buffer, image::ImageFormat::Png)
-            .expect("Debe serializar imagen de prueba");
-        buffer.into_inner()
-    }
-
-    fn imagen_ruidosa_png() -> Vec<u8> {
-        let mut image = ImageBuffer::from_pixel(64, 64, Rgb([255, 255, 255]));
-        for x in 12..52 {
-            image.put_pixel(x, 30, Rgb([0, 0, 0]));
-        }
-        for (x, y) in [(4, 5), (8, 42), (18, 10), (40, 44), (54, 18)] {
-            image.put_pixel(x, y, Rgb([0, 0, 0]));
-        }
-        png_desde_imagen(DynamicImage::ImageRgb8(image))
-    }
-
-    fn imagen_inclinada_png() -> Vec<u8> {
-        let mut image = GrayImage::from_pixel(96, 64, Luma([255]));
-        for offset in 0..55 {
-            let x = 12 + offset;
-            let y = 14 + (offset / 6);
-            if x < 96 && y < 64 {
-                image.put_pixel(x, y, Luma([0]));
-            }
-            if x < 96 && y + 10 < 64 {
-                image.put_pixel(x, y + 10, Luma([0]));
-            }
-        }
-        png_desde_imagen(DynamicImage::ImageLuma8(image))
-    }
-
-    fn contexto(stage: RefinementStage) -> RefinementContext<'static> {
-        RefinementContext {
-            source_path: Path::new("/tmp/doc.png"),
-            profile: &ProcessingProfile::Balanced,
-            total_pages: 1,
-            stage,
-            consumed_passes: 0,
-            remaining_passes: 1,
-        }
-    }
-
-    #[test]
-    fn test_denoise_pass_reescribe_raster() {
-        let original = imagen_ruidosa_png();
-        let mut document = documento_con_imagen(original.clone());
-        let mut blueprint = None;
-
-        DenoisePass::new()
-            .refine(
-                &mut document,
-                &mut blueprint,
-                &contexto(RefinementStage::BeforeLayout),
-            )
-            .expect("Denoise debe completar");
-
-        let procesada = document.pages[0]
-            .image_data
-            .clone()
-            .expect("La imagen debe seguir disponible");
-        assert_ne!(procesada, original);
-
-        let decoded = image::load_from_memory(&procesada).expect("PNG procesado válido");
-        assert_eq!(decoded.width(), 64);
-        assert_eq!(decoded.height(), 64);
-    }
-
-    #[test]
-    fn test_deskew_pass_reescribe_raster() {
-        let original = imagen_inclinada_png();
-        let mut document = documento_con_imagen(original.clone());
-        let mut blueprint = None;
-
-        DeskewPass::new()
-            .refine(
-                &mut document,
-                &mut blueprint,
-                &contexto(RefinementStage::BeforeLayout),
-            )
-            .expect("Deskew debe completar");
-
-        let procesada = document.pages[0]
-            .image_data
-            .clone()
-            .expect("La imagen debe seguir disponible");
-        assert_ne!(procesada, original);
-
-        let decoded = image::load_from_memory(&procesada).expect("PNG procesado válido");
-        assert_eq!(decoded.width(), 96);
-        assert_eq!(decoded.height(), 64);
     }
 }
