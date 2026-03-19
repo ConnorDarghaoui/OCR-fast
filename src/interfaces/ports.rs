@@ -135,10 +135,14 @@ pub trait ExporterPort: Send + Sync {
     fn format_name(&self) -> &str;
 }
 
-/// Contrato para resolver un motor de layout auxiliar según el OCR activo.
+/// Contrato legacy para resolver un motor de layout auxiliar según el OCR activo.
 ///
-/// El puerto encapsula la política de composición entre OCR y layout para que la
-/// TUI no tenga que decidir entre implementaciones concretas de infraestructura.
+/// La ruta canónica del producto usa motores OCR que ya integran layout
+/// semántico, por lo que este puerto quedó como fallback explícito para engines
+/// que no proveen esa capacidad.
+///
+/// No debe formar parte del wiring principal de la aplicación salvo que el OCR
+/// activo no provea layout y se haya decidido aceptar esa degradación.
 pub trait LayoutEngineFactoryPort: Send + Sync {
     /// Retorna un motor de layout auxiliar cuando el OCR activo no lo incorpora.
     fn create_for(&self, ocr_engine: &dyn OcrEnginePort) -> Option<Arc<dyn LayoutEnginePort>>;

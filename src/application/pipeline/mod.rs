@@ -130,14 +130,14 @@ pub struct PipelineResult {
 pub struct OcrPipeline {
     parser: Arc<dyn DocumentParserPort>,
     preprocesador: Option<Arc<dyn PreprocessorPort>>,
-    layout_engine: Option<Arc<dyn LayoutEnginePort>>,
+    fallback_layout_engine: Option<Arc<dyn LayoutEnginePort>>,
     ocr_engine: Arc<dyn OcrEnginePort>,
     table_analyzer: Option<Arc<dyn TableAnalyzerPort>>,
     postprocesador: Option<Arc<dyn PostprocessorPort>>,
-    blueprint_builder: Option<Arc<dyn DocumentBlueprintBuilderPort>>,
+    legacy_blueprint_builder: Option<Arc<dyn DocumentBlueprintBuilderPort>>,
     refinement_passes: Vec<Arc<dyn RefinementPass>>,
     refinement_budget: RefinementBudget,
-    ensamblador_documento: Option<Arc<dyn DocumentAssemblerPort>>,
+    legacy_document_assembler: Option<Arc<dyn DocumentAssemblerPort>>,
 }
 
 impl OcrPipeline {
@@ -152,14 +152,14 @@ impl OcrPipeline {
         Self {
             parser,
             preprocesador: None,
-            layout_engine: None,
+            fallback_layout_engine: None,
             ocr_engine,
             table_analyzer: None,
             postprocesador: None,
-            blueprint_builder: None,
+            legacy_blueprint_builder: None,
             refinement_passes: Vec::new(),
             refinement_budget: RefinementBudget::default(),
-            ensamblador_documento: None,
+            legacy_document_assembler: None,
         }
     }
 
@@ -169,9 +169,13 @@ impl OcrPipeline {
         self
     }
 
-    /// Añade un motor externo de layout cuando el OCR no lo integra.
+    /// Añade un motor externo de layout solo como fallback legacy.
+    ///
+    /// La ruta canónica del producto espera que el OCR principal ya sea dueño
+    /// del layout. Este hook se conserva para engines alternativos o pruebas
+    /// que todavía dependan de un layout heurístico separado.
     pub fn with_layout_engine(mut self, layout_engine: Arc<dyn LayoutEnginePort>) -> Self {
-        self.layout_engine = Some(layout_engine);
+        self.fallback_layout_engine = Some(layout_engine);
         self
     }
 
@@ -197,7 +201,7 @@ impl OcrPipeline {
         mut self,
         blueprint_builder: Arc<dyn DocumentBlueprintBuilderPort>,
     ) -> Self {
-        self.blueprint_builder = Some(blueprint_builder);
+        self.legacy_blueprint_builder = Some(blueprint_builder);
         self
     }
 
@@ -213,12 +217,16 @@ impl OcrPipeline {
         self
     }
 
-    /// Añade una fase final que reconstruye el documento guiándose por layout.
+    /// Añade una fase final de ensamblado solo para compatibilidad legacy.
+    ///
+    /// La política canónica de composición ya vive en `PageComposer`. Este hook
+    /// existe para tests o callers antiguos que aún quieran mutar el `Document`
+    /// antes de construir el blueprint.
     pub fn with_document_assembler(
         mut self,
         ensamblador_documento: Arc<dyn DocumentAssemblerPort>,
     ) -> Self {
-        self.ensamblador_documento = Some(ensamblador_documento);
+        self.legacy_document_assembler = Some(ensamblador_documento);
         self
     }
 
@@ -325,7 +333,7 @@ impl OcrPipeline {
             &mut refinement_consumidos,
         )?;
 
-        if let Some(ref layout_engine) = self.layout_engine {
+        if let Some(ref layout_engine) = self.fallback_layout_engine {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
@@ -423,7 +431,7 @@ impl OcrPipeline {
             &mut refinement_consumidos,
         )?;
 
-        if let Some(ref ensamblador_documento) = self.ensamblador_documento {
+        if let Some(ref ensamblador_documento) = self.legacy_document_assembler {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
@@ -484,7 +492,7 @@ impl OcrPipeline {
         &self,
         documento: &Document,
     ) -> Result<DocumentBlueprint, PipelineFailure> {
-        if let Some(ref blueprint_builder) = self.blueprint_builder {
+        if let Some(ref blueprint_builder) = self.legacy_blueprint_builder {
             let blueprint = blueprint_builder
                 .build_blueprint(documento)
                 .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
