@@ -1,6 +1,6 @@
 use crate::domain::{
-    BlockType, Document, Page, ProcessingMode,
-    DOCUMENT_METADATA_PAGE_PROCESSING_MODES, DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
+    BlockType, Document, Page, ProcessingMode, DOCUMENT_METADATA_PAGE_PROCESSING_MODES,
+    DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
 
 pub(crate) fn resumir_processing_mode(page_processing_modes: &[ProcessingMode]) -> ProcessingMode {

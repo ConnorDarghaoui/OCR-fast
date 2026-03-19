@@ -35,7 +35,10 @@ pub(super) fn px_a_pt(px: u32) -> f64 {
     (px as f64) * (PUNTOS_POR_PULGADA / DPI_REFERENCIA)
 }
 
-pub(super) fn obtener_pagina<'a>(job: &'a Job, numero_pagina: u32) -> Result<&'a Page, ExportError> {
+pub(super) fn obtener_pagina<'a>(
+    job: &'a Job,
+    numero_pagina: u32,
+) -> Result<&'a Page, ExportError> {
     job.document
         .pages
         .iter()

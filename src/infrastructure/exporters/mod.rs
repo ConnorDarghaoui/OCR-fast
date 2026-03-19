@@ -63,7 +63,11 @@ impl Default for DefaultJobExporter {
 }
 
 impl JobExporterPort for DefaultJobExporter {
-    fn export_job(&self, job: &Job, output_path: &Path) -> Result<(), crate::domain::errors::ExportError> {
+    fn export_job(
+        &self,
+        job: &Job,
+        output_path: &Path,
+    ) -> Result<(), crate::domain::errors::ExportError> {
         self.exportador_para(job.formato_salida)
             .export(job, output_path)
     }

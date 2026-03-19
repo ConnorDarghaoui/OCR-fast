@@ -314,13 +314,13 @@ impl OcrPipeline {
                 .iter()
                 .any(|p| p.blocks.iter().any(|b| b.block_type == BlockType::Table));
             if hay_tablas {
-            self.notificar(
-                notificador,
-                PipelineEvent::FaseCambiada {
-                    fase: "Resolviendo tablas".to_string(),
-                    progreso: 0.75,
-                },
-            );
+                self.notificar(
+                    notificador,
+                    PipelineEvent::FaseCambiada {
+                        fase: "Resolviendo tablas".to_string(),
+                        progreso: 0.75,
+                    },
+                );
                 table_analyzer
                     .analyze_tables(&mut documento)
                     .map_err(|error| Self::error_fase(PipelineStage::Tablas, error))?;

@@ -1,8 +1,17 @@
 use crate::domain::{Block, BlockType, Page};
 
-pub(crate) fn order_blocks_for_document<'a>(blocks: &'a [Block], page_width: u32) -> Vec<&'a Block> {
+pub(crate) fn order_blocks_for_document<'a>(
+    blocks: &'a [Block],
+    page_width: u32,
+) -> Vec<&'a Block> {
     let mut sorted: Vec<&Block> = blocks.iter().collect();
-    sorted.sort_by_key(|block| (block.bounding_box.y, block.bounding_box.x, block.reading_order));
+    sorted.sort_by_key(|block| {
+        (
+            block.bounding_box.y,
+            block.bounding_box.x,
+            block.reading_order,
+        )
+    });
 
     if estimate_columns(blocks, page_width) == 1 {
         return sorted;
@@ -49,7 +58,13 @@ pub(crate) fn order_blocks_for_document<'a>(blocks: &'a [Block], page_width: u32
 
 pub(crate) fn order_blocks_for_visual<'a>(blocks: &'a [Block]) -> Vec<&'a Block> {
     let mut sorted: Vec<&Block> = blocks.iter().collect();
-    sorted.sort_by_key(|block| (block.reading_order, block.bounding_box.y, block.bounding_box.x));
+    sorted.sort_by_key(|block| {
+        (
+            block.reading_order,
+            block.bounding_box.y,
+            block.bounding_box.x,
+        )
+    });
     sorted
 }
 
@@ -150,7 +165,13 @@ pub(crate) fn reorder_page_document(page: &mut Page) {
 }
 
 pub(crate) fn preserve_page_visual_order(page: &mut Page) {
-    page.blocks.sort_by_key(|block| (block.reading_order, block.bounding_box.y, block.bounding_box.x));
+    page.blocks.sort_by_key(|block| {
+        (
+            block.reading_order,
+            block.bounding_box.y,
+            block.bounding_box.x,
+        )
+    });
     renumber_reading_order(&mut page.blocks);
 }
 

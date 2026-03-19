@@ -4,8 +4,8 @@ use super::common::{
 };
 use crate::domain::errors::ExportError;
 use crate::domain::{
-    AlignmentHint, ElementBlueprint, ElementRole, EmphasisHint, Job, PageBlueprint,
-    ProcessingMode, Rectangle, TableCellAlignment, TableStructure,
+    AlignmentHint, ElementBlueprint, ElementRole, EmphasisHint, Job, PageBlueprint, ProcessingMode,
+    Rectangle, TableCellAlignment, TableStructure,
 };
 use crate::interfaces::ports::ExporterPort;
 use encoding_rs::WINDOWS_1252;

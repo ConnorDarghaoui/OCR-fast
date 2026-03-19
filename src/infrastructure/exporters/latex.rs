@@ -7,9 +7,7 @@ use super::latex_ast::{
     LatexNode, LatexPackage, LatexParagraph, LatexTable, LatexTextBlock,
 };
 use crate::domain::errors::ExportError;
-use crate::domain::{
-    ElementBlueprint, ElementRole, Job, ProcessingMode, Rectangle,
-};
+use crate::domain::{ElementBlueprint, ElementRole, Job, ProcessingMode, Rectangle};
 use crate::interfaces::ports::ExporterPort;
 use std::fs;
 use std::path::Path;

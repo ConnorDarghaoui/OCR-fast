@@ -7,10 +7,8 @@ use crate::domain::errors::LayoutError;
 use crate::domain::{Document, DocumentBlueprint, Page, PageBlueprint, ProcessingMode};
 use crate::infrastructure::automata::BlockAutomata;
 use header_footer::marcar_hints_encabezado_pie;
-pub use mode::{
-    inferir_modos_procesamiento_por_pagina, persistir_modos_procesamiento_por_pagina,
-};
 use mode::resumir_processing_mode;
+pub use mode::{inferir_modos_procesamiento_por_pagina, persistir_modos_procesamiento_por_pagina};
 use ordering::{
     estimate_columns, infer_column_bases, infer_indent_pt, infer_spacing_before, is_visual_anchor,
     order_blocks_for_document, order_blocks_for_visual, preserve_page_visual_order,
@@ -104,11 +102,12 @@ impl PageComposer {
                 && total_columns == 2
                 && !is_visual_anchor(block, page.dimensions.width);
             let element_columns = if use_two_columns { 2 } else { 1 };
-            let column_index = if use_two_columns && center_is_right_column(block, page.dimensions.width) {
-                1
-            } else {
-                0
-            };
+            let column_index =
+                if use_two_columns && center_is_right_column(block, page.dimensions.width) {
+                    1
+                } else {
+                    0
+                };
             let spacing_before_pt = infer_spacing_before(
                 &ordered_blocks,
                 index,

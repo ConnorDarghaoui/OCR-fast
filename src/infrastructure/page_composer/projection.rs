@@ -1,6 +1,6 @@
 use crate::domain::{
-    AlignmentHint, BlockContent, ElementBlueprint, ElementRole, EmphasisHint, Page,
-    ProcessingMode, ResolvedBlock, StyleHints,
+    AlignmentHint, BlockContent, ElementBlueprint, ElementRole, EmphasisHint, Page, ProcessingMode,
+    ResolvedBlock, StyleHints,
 };
 
 pub(crate) fn build_element(
