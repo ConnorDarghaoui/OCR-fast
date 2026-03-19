@@ -1,6 +1,5 @@
 use crate::application::pipeline::{OcrPipeline, PipelineEvent};
 use crate::domain::{LanguageConfig, ProcessingProfile};
-use crate::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
 use crate::infrastructure::postprocessors::TextPostprocessor;
 use crate::interfaces::ports::{DocumentParserPort, LayoutEngineFactoryPort, OcrEnginePort};
 use std::collections::HashMap;
@@ -62,10 +61,8 @@ impl JobRuntimeState {
 
         std::thread::spawn(move || {
             let postprocesador = TextPostprocessor::new().with_language(&idioma.primary);
-            let ensamblador = Arc::new(LayoutGuidedDocumentAssembler::new());
             let mut pipeline = OcrPipeline::new(analizador, Arc::clone(&motor))
-                .with_postprocessor(Arc::new(postprocesador))
-                .with_document_assembler(ensamblador);
+                .with_postprocessor(Arc::new(postprocesador));
 
             if let Some(layout_engine) = layout_factory.create_for(motor.as_ref()) {
                 log::info!("Usando {} como motor de layout", layout_engine.name());

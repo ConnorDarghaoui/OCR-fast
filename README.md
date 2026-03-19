@@ -1,7 +1,9 @@
 # OCRFast
 
-OCR local-first en Rust con interfaz TUI, pipeline modular y exportación a
-Markdown, PDF sandwich y JSON.
+OCR local-first en Rust con interfaz TUI para reconstrucción facsimilar y
+extracción OCR. El producto se centra en `PDF`, `LaTeX`, `TXT` y `JSON`
+técnico, con una arquitectura que usa layout como verdad geométrica y una capa
+de composición por página para evitar reinterpretaciones duplicadas.
 
 ## Qué hace hoy
 
@@ -11,7 +13,9 @@ Markdown, PDF sandwich y JSON.
 - Usa `pdfium` para rasterizar PDF sin depender de una instalación manual.
 - Persiste trabajos en disco para recuperar estado entre sesiones.
 - Expone un pipeline desacoplado por puertos para parser, layout, OCR,
-  preprocesamiento, postprocesamiento, exportación y storage.
+  preprocesamiento, composición por página, exportación y storage.
+- Resuelve bloques con un autómata determinista y compone páginas en un modelo
+  visual único antes de renderizar PDF/LaTeX.
 
 ## Modelo de ejecución real
 
@@ -82,9 +86,9 @@ Binario compilado:
 ### Vista de detalle
 
 - `j` / `k` o flechas: scroll.
-- `e`: exportar a Markdown.
+- `e`: exportar al formato seleccionado.
 - `E`: exportar a JSON.
-- `p`: exportar a PDF sandwich.
+- `p`: exportar a PDF.
 - `z`: cancelar si el trabajo sigue corriendo.
 - `Esc` o `q`: volver a la lista.
 
@@ -117,8 +121,9 @@ Binario compilado:
 
 ### Salida
 
-- Markdown
-- PDF sandwich con texto invisible seleccionable
+- TXT
+- LaTeX
+- PDF reconstruido o preservado según el modo de página
 - JSON estructurado
 
 ## GPU y features
@@ -157,11 +162,14 @@ src/
 │       ├── events.rs
 │       └── ui.rs
 ├── infrastructure/
+│   ├── automata/
 │   ├── document_parsers/
+│   ├── document_blueprints/
 │   ├── exporters/
 │   ├── job_store/
 │   ├── layout_engines/
 │   ├── ocr_engines/
+│   ├── page_composer/
 │   ├── postprocessors/
 │   └── preprocessors/
 ├── lib.rs
@@ -174,7 +182,17 @@ src/
 - `interfaces`: puertos que definen contratos estables.
 - `application`: orquestación del pipeline y estado de la TUI.
 - `infrastructure`: adaptadores concretos para parsing, layout, OCR,
-  persistencia y exportación.
+  persistencia, composición y exportación.
+
+## Arquitectura visual actual
+
+- `DocLayout-YOLO` sigue siendo la verdad geométrica.
+- `BlockAutomata` decide por bloque si el contenido final queda como texto,
+  tabla, imagen o fallback raster.
+- `PageComposer` decide el modo efectivo por página, fija el orden de lectura
+  y produce un `DocumentBlueprint` estable.
+- Los exportadores PDF y LaTeX consumen ese modelo compuesto en lugar de
+  recalcular layout por su cuenta.
 
 ## Pruebas
 

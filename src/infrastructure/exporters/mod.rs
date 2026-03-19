@@ -7,8 +7,8 @@ use crate::domain::{
     AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job,
     OutputFormat, Page, ProcessingMode, Rectangle, TableCellAlignment, TableStructure,
 };
-use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
-use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort, JobExporterPort};
+use crate::infrastructure::page_composer::PageComposer;
+use crate::interfaces::ports::{ExporterPort, JobExporterPort};
 use encoding_rs::WINDOWS_1252;
 use latex_ast::{
     render_document, LatexAsset, LatexContent, LatexDocument, LatexExportPlan, LatexImage,
@@ -438,11 +438,9 @@ impl ExporterPort for JsonExporter {
 fn construir_blueprint(
     documento: &crate::domain::Document,
 ) -> Result<DocumentBlueprint, ExportError> {
-    HighFidelityBlueprintBuilder::new()
-        .build_blueprint(documento)
-        .map_err(|e| {
-            ExportError::SerializationError(format!("No se pudo construir blueprint: {e}"))
-        })
+    PageComposer::new().compose(documento).map_err(|e| {
+        ExportError::SerializationError(format!("No se pudo construir blueprint: {e}"))
+    })
 }
 
 fn asegurar_directorio_padre(ruta: &Path) -> Result<(), ExportError> {
