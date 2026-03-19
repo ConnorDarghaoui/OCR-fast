@@ -6,9 +6,7 @@ use crate::domain::{
     DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
-use crate::interfaces::ports::{
-    DocumentParserPort, JobExporterPort, JobStorePort, LayoutEngineFactoryPort, OcrEnginePort,
-};
+use crate::interfaces::ports::{DocumentParserPort, JobExporterPort, JobStorePort, OcrEnginePort};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -73,7 +71,6 @@ pub struct AppState {
     pub analizador_documentos: Arc<dyn DocumentParserPort>,
     motor_ocr: Arc<dyn OcrEnginePort>,
     job_store: Arc<dyn JobStorePort>,
-    layout_factory: Arc<dyn LayoutEngineFactoryPort>,
     job_exporter: Arc<dyn JobExporterPort>,
     estado_motor: EngineBootstrapState,
     ejecucion_jobs: JobRuntimeState,
@@ -112,7 +109,6 @@ impl AppState {
         analizador_documentos: Arc<dyn DocumentParserPort>,
         motor_ocr: Arc<dyn OcrEnginePort>,
         job_store: Arc<dyn JobStorePort>,
-        layout_factory: Arc<dyn LayoutEngineFactoryPort>,
         job_exporter: Arc<dyn JobExporterPort>,
     ) -> Self {
         let (trabajos, log_arranque) = cargar_trabajos_iniciales(&*job_store);
@@ -129,7 +125,6 @@ impl AppState {
             analizador_documentos,
             motor_ocr,
             job_store,
-            layout_factory,
             job_exporter,
             estado_motor: EngineBootstrapState::new(),
             ejecucion_jobs: JobRuntimeState::new(),
@@ -378,20 +373,12 @@ impl AppState {
         self.trabajos[indice].status = JobStatus::Processing;
         let analizador = Arc::clone(&self.analizador_documentos);
         let motor = Arc::clone(&self.motor_ocr);
-        let layout_factory = Arc::clone(&self.layout_factory);
         let perfil = self.trabajos[indice].profile;
         let ruta = self.trabajos[indice].document.source_path.clone();
         let idioma = self.idioma.clone();
 
-        self.ejecucion_jobs.iniciar(
-            id_trabajo.clone(),
-            ruta,
-            perfil,
-            idioma,
-            analizador,
-            motor,
-            layout_factory,
-        );
+        self.ejecucion_jobs
+            .iniciar(id_trabajo.clone(), ruta, perfil, idioma, analizador, motor);
 
         log::info!(
             "Procesamiento iniciado para trabajo {}",

@@ -123,58 +123,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir_temp);
     }
 
-    /// Test de layout aislado (DocLayout-YOLO).
-    #[test]
-    #[ignore]
-    fn test_layout_con_imagen_sintetica() {
-        use ocrfast::domain::{Dimensions, Page};
-        use ocrfast::infrastructure::ocr_engines::onnx::OnnxOcrEngine;
-        use ocrfast::interfaces::ports::LayoutEnginePort;
-
-        let imagen = generar_imagen_con_texto_simulado();
-        let mut datos_imagen = Vec::new();
-        imagen
-            .write_to(
-                &mut std::io::Cursor::new(&mut datos_imagen),
-                image::ImageFormat::Png,
-            )
-            .unwrap();
-
-        let pagina = Page {
-            number: 1,
-            dimensions: Dimensions {
-                width: 800,
-                height: 600,
-            },
-            blocks: vec![],
-            image_data: Some(datos_imagen),
-        };
-
-        let engine = OnnxOcrEngine::new().expect("OnnxOcrEngine debe inicializarse");
-
-        let bloques = engine.analyze(&pagina);
-        assert!(
-            bloques.is_ok(),
-            "Layout analysis debe ejecutarse: {:?}",
-            bloques.err()
-        );
-
-        let bloques = bloques.unwrap();
-        eprintln!("Layout detecto {} bloques", bloques.len());
-
-        for bloque in &bloques {
-            eprintln!(
-                "  [{:?}] x={} y={} w={} h={} conf={:.2}",
-                bloque.block_type,
-                bloque.bounding_box.x,
-                bloque.bounding_box.y,
-                bloque.bounding_box.width,
-                bloque.bounding_box.height,
-                bloque.confidence
-            );
-        }
-    }
-
     /// Test del downloader: descarga y verifica modelos.
     #[test]
     #[ignore]

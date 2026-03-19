@@ -127,6 +127,8 @@ mod infrastructure_tests {
     use ocrfast::infrastructure::job_store::{
         normalizar_jobs_al_arranque, FileJobStore, InMemoryJobStore, JobStore,
     };
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
     fn test_in_memory_job_store() {
@@ -315,6 +317,44 @@ mod infrastructure_tests {
     }
 
     #[test]
+    fn test_file_job_store_serializa_escrituras_concurrentes() {
+        let directorio = tempfile::tempdir().expect("No se pudo crear directorio temporal");
+        let ruta = directorio.path().join("jobs.json");
+        let store = Arc::new(FileJobStore::with_path(&ruta));
+        let total_hilos = 12usize;
+        let barrera = Arc::new(Barrier::new(total_hilos));
+        let mut handles = Vec::with_capacity(total_hilos);
+
+        for indice in 0..total_hilos {
+            let store = Arc::clone(&store);
+            let barrera = Arc::clone(&barrera);
+            handles.push(thread::spawn(move || {
+                let job = job_de_prueba(&format!("concurrente-{indice}"));
+                barrera.wait();
+                store.save(&job)
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .expect("el hilo no debe panic")
+                .expect("la escritura concurrente debe completarse");
+        }
+
+        let jobs = store.list().expect("listado final");
+        assert_eq!(jobs.len(), total_hilos);
+
+        for indice in 0..total_hilos {
+            let id = format!("concurrente-{indice}");
+            assert!(
+                jobs.iter().any(|job| job.id == id),
+                "debe persistirse el job {id}"
+            );
+        }
+    }
+
+    #[test]
     fn test_normalizar_jobs_al_arranque_marca_processing_como_failed() {
         let mut jobs = vec![
             {
@@ -443,7 +483,6 @@ mod exporter_tests {
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableCellAlignment, TableCellStyle, TableStructure,
     };
-    use ocrfast::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
     use ocrfast::infrastructure::exporters::{
         JsonExporter, LatexExporter, PdfReconstructedExporter, TxtExporter,
     };
@@ -451,7 +490,8 @@ mod exporter_tests {
     use ocrfast::infrastructure::exporters::{
         LatexCompilerValidator, OCRFAST_RUN_TECTONIC_TESTS_ENV,
     };
-    use ocrfast::interfaces::ports::{DocumentAssemblerPort, ExporterPort};
+    use ocrfast::infrastructure::page_composer::PageComposer;
+    use ocrfast::interfaces::ports::ExporterPort;
     use std::collections::HashMap;
 
     fn png_color_sintetico(ancho: u32, alto: u32, color: [u8; 3]) -> Vec<u8> {
@@ -1723,7 +1763,7 @@ mod exporter_tests {
     }
 
     #[test]
-    fn test_txt_exporta_en_orden_de_lectura_canonico() {
+    fn test_page_composer_reordena_para_txt_en_modo_documental() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_txt_order");
         std::fs::create_dir_all(&dir).unwrap();
         let ruta = dir.join("output.txt");
@@ -1777,9 +1817,7 @@ mod exporter_tests {
             },
         ];
 
-        LayoutGuidedDocumentAssembler::new()
-            .assemble(&mut job.document)
-            .unwrap();
+        PageComposer::new().apply_document_order(&mut job.document);
 
         let exporter = TxtExporter::new();
         exporter.export(&job, &ruta).unwrap();
@@ -1910,158 +1948,6 @@ mod preprocessor_image_tests {
         };
         assert!(pp.preprocess(&mut doc).is_ok());
         assert!(doc.pages[0].image_data.is_none());
-    }
-}
-
-#[cfg(test)]
-mod layout_engine_tests {
-    use ocrfast::domain::{Block, BlockType, Dimensions, Page};
-    use ocrfast::infrastructure::layout_engines::XyCutLayoutEngine;
-    use ocrfast::interfaces::ports::LayoutEnginePort;
-
-    fn pagina_con_imagen_sintetica(ancho: u32, alto: u32) -> Page {
-        let mut img = image::RgbImage::new(ancho, alto);
-        for y in 0..alto {
-            for x in 0..ancho {
-                img.put_pixel(x, y, image::Rgb([255, 255, 255]));
-            }
-        }
-        for y in 50..80 {
-            for x in 50..ancho - 50 {
-                img.put_pixel(x, y, image::Rgb([30, 30, 30]));
-            }
-        }
-        for y in 150..300 {
-            for x in 50..ancho - 50 {
-                img.put_pixel(x, y, image::Rgb([40, 40, 40]));
-            }
-        }
-
-        let mut buffer = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgb8(img)
-            .write_to(&mut buffer, image::ImageFormat::Png)
-            .unwrap();
-
-        Page {
-            number: 1,
-            dimensions: Dimensions {
-                width: ancho,
-                height: alto,
-            },
-            blocks: vec![],
-            image_data: Some(buffer.into_inner()),
-        }
-    }
-
-    #[test]
-    fn test_xy_cut_detecta_bloques_en_imagen_con_contenido() {
-        let engine = XyCutLayoutEngine::new();
-        let page = pagina_con_imagen_sintetica(600, 400);
-
-        let bloques = engine.analyze(&page).expect("XY-Cut no debe fallar");
-
-        assert!(!bloques.is_empty(), "Debe detectar al menos un bloque");
-    }
-
-    #[test]
-    fn test_xy_cut_bloques_tienen_bounding_box_valido() {
-        let engine = XyCutLayoutEngine::new();
-        let page = pagina_con_imagen_sintetica(600, 400);
-
-        let bloques = engine.analyze(&page).unwrap();
-
-        for bloque in &bloques {
-            assert!(
-                bloque.bounding_box.width > 0,
-                "Bloque debe tener ancho positivo"
-            );
-            assert!(
-                bloque.bounding_box.height > 0,
-                "Bloque debe tener alto positivo"
-            );
-            assert!(
-                bloque.bounding_box.x + bloque.bounding_box.width <= 600,
-                "Bloque no debe exceder ancho de pagina"
-            );
-            assert!(
-                bloque.bounding_box.y + bloque.bounding_box.height <= 400,
-                "Bloque no debe exceder alto de pagina"
-            );
-        }
-    }
-
-    #[test]
-    fn test_xy_cut_asigna_orden_de_lectura_secuencial() {
-        let engine = XyCutLayoutEngine::new();
-        let page = pagina_con_imagen_sintetica(600, 400);
-
-        let bloques = engine.analyze(&page).unwrap();
-
-        for (i, bloque) in bloques.iter().enumerate() {
-            assert_eq!(
-                bloque.reading_order, i as u32,
-                "reading_order debe ser secuencial"
-            );
-        }
-    }
-
-    #[test]
-    fn test_xy_cut_pagina_sin_imagen_retorna_bloques_existentes() {
-        let engine = XyCutLayoutEngine::new();
-        let bloque_existente = Block {
-            block_type: BlockType::Text,
-            bounding_box: ocrfast::domain::Rectangle {
-                x: 0,
-                y: 0,
-                width: 100,
-                height: 50,
-            },
-            content: "texto previo".to_string(),
-            confidence: 0.9,
-            layout_confidence: None,
-            embedded_image: None,
-            table_structure: None,
-            reading_order: 0,
-        };
-        let page = Page {
-            number: 1,
-            dimensions: Dimensions {
-                width: 600,
-                height: 400,
-            },
-            blocks: vec![bloque_existente],
-            image_data: None,
-        };
-
-        let bloques = engine.analyze(&page).unwrap();
-        assert_eq!(bloques.len(), 1);
-        assert_eq!(bloques[0].content, "texto previo");
-    }
-
-    #[test]
-    fn test_xy_cut_imagen_totalmente_blanca_retorna_cero_bloques() {
-        let engine = XyCutLayoutEngine::new();
-        let mut buffer = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(
-            200,
-            200,
-            image::Luma([255u8]),
-        ))
-        .write_to(&mut buffer, image::ImageFormat::Png)
-        .unwrap();
-
-        let page = Page {
-            number: 1,
-            dimensions: Dimensions {
-                width: 200,
-                height: 200,
-            },
-            blocks: vec![],
-            image_data: Some(buffer.into_inner()),
-        };
-
-        let bloques = engine.analyze(&page).unwrap();
-        assert_eq!(bloques.len(), 0, "Imagen blanca no debe generar bloques");
     }
 }
 

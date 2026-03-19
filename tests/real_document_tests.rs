@@ -2,8 +2,6 @@
 mod real_document_tests {
     use ocrfast::application::pipeline::OcrPipeline;
     use ocrfast::domain::ProcessingProfile;
-    use ocrfast::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
-    use ocrfast::infrastructure::layout_engines::XyCutLayoutEngine;
     use ocrfast::infrastructure::ocr_engines::onnx::{
         engine::OnnxOcrEngine, model_downloader::ModelDownloader,
         runtime_provisioner::ModelRuntimeProvisioner,
@@ -74,14 +72,9 @@ mod real_document_tests {
                 .expect("No se pudo inicializar OnnxOcrEngine con los modelos disponibles"),
         );
         let parser = Arc::new(PdfiumParser::new().expect("No se pudo inicializar PdfiumParser"));
-        let layout = Arc::new(XyCutLayoutEngine::new());
         let postprocesador = Arc::new(TextPostprocessor::new());
-        let ensamblador = Arc::new(LayoutGuidedDocumentAssembler::new());
 
-        OcrPipeline::new(parser, motor_ocr)
-            .with_layout_engine(layout)
-            .with_postprocessor(postprocesador)
-            .with_document_assembler(ensamblador)
+        OcrPipeline::new(parser, motor_ocr).with_postprocessor(postprocesador)
     }
 
     /// Calcula la tasa de palabras encontradas (hitrate) del texto extraido

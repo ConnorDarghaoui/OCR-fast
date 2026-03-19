@@ -1,5 +1,5 @@
-use crate::domain::errors::{LayoutError, OcrError};
-use crate::domain::{Block, BlockType, Document, Page, ProcessingProfile, Rectangle};
+use crate::domain::errors::OcrError;
+use crate::domain::{Block, BlockType, Document, ProcessingProfile, Rectangle};
 use crate::infrastructure::ocr_engines::onnx::layout::DocLayoutYoloEngine;
 use crate::infrastructure::ocr_engines::onnx::orientation::OrientationDetector;
 use crate::infrastructure::ocr_engines::onnx::runtime_provisioner::{
@@ -8,7 +8,7 @@ use crate::infrastructure::ocr_engines::onnx::runtime_provisioner::{
 use crate::infrastructure::ocr_engines::onnx::table_analyzer::TableAnalyzer;
 use crate::infrastructure::ocr_engines::onnx::text_detection::TextDetector;
 use crate::infrastructure::ocr_engines::onnx::text_recognition::TextRecognizer;
-use crate::interfaces::ports::{LayoutEnginePort, OcrEnginePort};
+use crate::interfaces::ports::OcrEnginePort;
 use image::{DynamicImage, GenericImageView};
 use std::path::Path;
 
@@ -306,21 +306,5 @@ impl OcrEnginePort for OnnxOcrEngine {
 
     fn provides_layout(&self) -> bool {
         true
-    }
-}
-
-impl LayoutEnginePort for OnnxOcrEngine {
-    fn analyze(&self, page: &Page) -> Result<Vec<Block>, LayoutError> {
-        let imagen = match &page.image_data {
-            Some(bytes) => image::load_from_memory(bytes)
-                .map_err(|e| LayoutError::InvalidImage(e.to_string()))?,
-            None => return Err(LayoutError::InvalidImage("Sin imagen".to_string())),
-        };
-
-        self.layout.analizar_imagen(&imagen)
-    }
-
-    fn name(&self) -> &str {
-        "OnnxLayoutEngine"
     }
 }

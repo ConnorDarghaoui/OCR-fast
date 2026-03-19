@@ -2,9 +2,8 @@ use crate::domain::errors::{
     DocumentError, ExportError, JobStoreError, LayoutError, ModelDownloadError, OcrError,
     PreprocessError,
 };
-use crate::domain::{Block, Document, DocumentBlueprint, Job, Page, ProcessingProfile};
+use crate::domain::{Document, Job, ProcessingProfile};
 use std::path::Path;
-use std::sync::Arc;
 
 /// Contrato para rasterizar páginas PDF sin acoplar el pipeline a Pdfium.
 ///
@@ -36,25 +35,6 @@ pub trait PdfRendererPort: Send + Sync {
 
     /// Cuenta páginas sin obligar a renderizar el documento completo.
     fn get_page_count(&self, path: &Path) -> Result<u32, DocumentError>;
-}
-
-/// Contrato para segmentar una página en bloques semánticos ordenados.
-///
-/// El objetivo del puerto es aislar al pipeline de la estrategia concreta de
-/// layout: heurística, neuronal o híbrida. La interfaz exige orden de lectura
-/// estable porque exportadores y OCR posteriores dependen de esa secuencia para
-/// producir resultados reproducibles.
-///
-/// # Trade-offs
-///
-/// El retorno usa `Vec<Block>` en lugar de un iterador streaming porque etapas
-/// posteriores necesitan acceso repetido y mutación de los bloques generados.
-pub trait LayoutEnginePort: Send + Sync {
-    /// Analiza una página y retorna bloques con geometría y semántica inicial.
-    fn analyze(&self, page: &Page) -> Result<Vec<Block>, LayoutError>;
-
-    /// Identificador estable del motor para logs, telemetría y diagnóstico.
-    fn name(&self) -> &str;
 }
 
 /// Contrato para poblar contenido OCR sobre un documento ya estructurado.
@@ -135,15 +115,6 @@ pub trait ExporterPort: Send + Sync {
     fn format_name(&self) -> &str;
 }
 
-/// Contrato para resolver un motor de layout auxiliar según el OCR activo.
-///
-/// El puerto encapsula la política de composición entre OCR y layout para que la
-/// TUI no tenga que decidir entre implementaciones concretas de infraestructura.
-pub trait LayoutEngineFactoryPort: Send + Sync {
-    /// Retorna un motor de layout auxiliar cuando el OCR activo no lo incorpora.
-    fn create_for(&self, ocr_engine: &dyn OcrEnginePort) -> Option<Arc<dyn LayoutEnginePort>>;
-}
-
 /// Contrato para exportar un `Job` usando su formato configurado.
 ///
 /// La capa de presentación delega la resolución de exportadores concretos a este
@@ -183,56 +154,6 @@ pub trait TableAnalyzerPort: Send + Sync {
     /// Detecta estructura interna en bloques marcados como tabla.
     fn analyze_tables(&self, document: &mut Document) -> Result<(), LayoutError>;
     /// Nombre del analizador para observabilidad y soporte.
-    fn name(&self) -> &str;
-}
-
-/// Contrato para reconstrucción visual posterior a OCR y layout.
-///
-/// El builder traduce el árbol crudo del dominio a una representación intermedia
-/// orientada a exportadores ricos como LaTeX o PDF reconstruido. Esta fase
-/// existe para evitar que cada exportador reimplante heurísticas de columnas,
-/// anclas visuales y preservación de imágenes.
-///
-/// # Trade-offs
-///
-/// El contrato opera sobre `Document` completo y no sobre páginas aisladas porque
-/// el exportador necesita una vista coherente del documento final. Esa decisión
-/// simplifica exportación a costa de impedir streaming total en esta frontera.
-pub trait DocumentBlueprintBuilderPort: Send + Sync {
-    /// Construye un blueprint visual listo para exportación de alta fidelidad.
-    ///
-    /// # Errors
-    ///
-    /// Retorna `LayoutError` cuando las invariantes geométricas del documento son
-    /// insuficientes para producir un orden visual reproducible.
-    fn build_blueprint(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError>;
-
-    /// Nombre estable del builder para trazabilidad y diagnóstico.
-    fn name(&self) -> &str;
-}
-
-/// Contrato para ensamblar el documento final a partir del layout detectado.
-///
-/// Esta fase toma bloques ya segmentados y enriquecidos por OCR para imponer una
-/// secuencia de lectura canónica antes de exportar o serializar resultados.
-pub trait DocumentAssemblerPort: Send + Sync {
-    /// Reordena y normaliza el documento para consumo final.
-    fn assemble(&self, document: &mut Document) -> Result<(), LayoutError>;
-    /// Identificador estable del ensamblador para logs y diagnóstico.
-    fn name(&self) -> &str;
-}
-
-/// Contrato único de composición por página para exportación rica.
-///
-/// Este puerto colapsa la responsabilidad histórica de ensamblar y luego
-/// reconstruir un blueprint. La implementación decide el modo efectivo por
-/// página, fija el orden de lectura y proyecta un modelo visual estable.
-pub trait PageComposerPort: Send + Sync {
-    /// Compone el documento a un modelo visual listo para render.
-    fn compose(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError>;
-    /// Reordena el documento in-place con la misma política del compositor.
-    fn apply_order(&self, document: &mut Document) -> Result<(), LayoutError>;
-    /// Identificador estable del compositor para logs y diagnóstico.
     fn name(&self) -> &str;
 }
 

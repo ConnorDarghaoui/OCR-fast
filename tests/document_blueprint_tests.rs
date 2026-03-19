@@ -3,10 +3,9 @@ use ocrfast::domain::{
     Block, BlockType, Dimensions, Document, ElementRole, Page, ProcessingMode, ProcessingProfile,
     Rectangle, DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
-use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
 use ocrfast::infrastructure::ocr_engines::stub::StubOcrEngine;
-use ocrfast::interfaces::ports::DocumentBlueprintBuilderPort;
+use ocrfast::infrastructure::page_composer::PageComposer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -144,11 +143,10 @@ fn documento_captura_marketplace() -> Document {
 }
 
 #[test]
-fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
-    let builder = HighFidelityBlueprintBuilder::new();
-    let blueprint = builder
-        .build_blueprint(&documento_dos_columnas())
-        .expect("El builder debe producir blueprint");
+fn test_page_composer_detecta_columnas_y_preserva_imagenes() {
+    let blueprint = PageComposer::new()
+        .compose(&documento_dos_columnas())
+        .expect("El compositor debe producir blueprint");
 
     let pagina = &blueprint.pages[0];
     assert_eq!(pagina.elements[0].role, ElementRole::Title);
@@ -207,11 +205,10 @@ fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
 }
 
 #[test]
-fn test_blueprint_marca_hints_conservadores_para_header_y_footer() {
-    let builder = HighFidelityBlueprintBuilder::new();
-    let blueprint = builder
-        .build_blueprint(&documento_con_header_footer_repetido())
-        .expect("El builder debe producir blueprint con hints");
+fn test_page_composer_marca_hints_conservadores_para_header_y_footer() {
+    let blueprint = PageComposer::new()
+        .compose(&documento_con_header_footer_repetido())
+        .expect("El compositor debe producir blueprint con hints");
 
     let pagina_uno = &blueprint.pages[0];
     let pagina_dos = &blueprint.pages[1];
@@ -232,8 +229,7 @@ fn test_pipeline_retorna_blueprint_sin_romper_documento_clasico() {
     let pipeline = OcrPipeline::new(
         Arc::new(StubDocumentParser::new()),
         Arc::new(StubOcrEngine::new()),
-    )
-    .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()));
+    );
 
     let resultado = pipeline
         .procesar_documento_con_blueprint(
@@ -265,11 +261,10 @@ fn test_pipeline_retorna_blueprint_sin_romper_documento_clasico() {
 }
 
 #[test]
-fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
-    let builder = HighFidelityBlueprintBuilder::new();
-    let blueprint = builder
-        .build_blueprint(&documento_captura_marketplace())
-        .expect("El builder debe clasificar capturas visuales");
+fn test_page_composer_detecta_captura_visual_y_evita_reflujo_documental() {
+    let blueprint = PageComposer::new()
+        .compose(&documento_captura_marketplace())
+        .expect("El compositor debe clasificar capturas visuales");
 
     assert_eq!(
         blueprint.processing_mode,
@@ -299,16 +294,16 @@ fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
 }
 
 #[test]
-fn test_blueprint_honra_override_manual_documental_desde_metadata() {
+fn test_page_composer_honra_override_manual_documental_desde_metadata() {
     let mut documento = documento_captura_marketplace();
     documento.metadata.insert(
         DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
         "document".to_string(),
     );
 
-    let blueprint = HighFidelityBlueprintBuilder::new()
-        .build_blueprint(&documento)
-        .expect("El builder debe honrar la preferencia manual");
+    let blueprint = PageComposer::new()
+        .compose(&documento)
+        .expect("El compositor debe honrar la preferencia manual");
 
     assert_eq!(
         blueprint.processing_mode,
@@ -317,16 +312,16 @@ fn test_blueprint_honra_override_manual_documental_desde_metadata() {
 }
 
 #[test]
-fn test_blueprint_honra_override_manual_visual_desde_metadata() {
+fn test_page_composer_honra_override_manual_visual_desde_metadata() {
     let mut documento = documento_dos_columnas();
     documento.metadata.insert(
         DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
         "visual".to_string(),
     );
 
-    let blueprint = HighFidelityBlueprintBuilder::new()
-        .build_blueprint(&documento)
-        .expect("El builder debe honrar la preservacion visual forzada");
+    let blueprint = PageComposer::new()
+        .compose(&documento)
+        .expect("El compositor debe honrar la preservacion visual forzada");
 
     assert_eq!(
         blueprint.processing_mode,

@@ -1,17 +1,15 @@
+use ocrfast::application::pipeline::recovery::ConfidenceBoostPass;
 use ocrfast::application::pipeline::{
-    ConfidenceBoostPass, NoopRefinementPass, OcrPipeline, PipelineEvent, PipelineFailure,
-    RefinementBudget, RefinementContext, RefinementPass, RefinementStage,
+    NoopRefinementPass, OcrPipeline, PipelineEvent, PipelineFailure, RefinementBudget,
+    RefinementContext, RefinementPass, RefinementStage,
 };
 use ocrfast::domain::errors::DocumentError;
-use ocrfast::domain::errors::{LayoutError, OcrError};
+use ocrfast::domain::errors::OcrError;
 use ocrfast::domain::{
     Block, BlockType, Dimensions, Document, DocumentBlueprint, Page, ProcessingProfile, Rectangle,
 };
-use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
-use ocrfast::interfaces::ports::{
-    DocumentAssemblerPort, DocumentParserPort, OcrEnginePort, PostprocessorPort,
-};
+use ocrfast::interfaces::ports::{DocumentParserPort, OcrEnginePort, PostprocessorPort};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -364,41 +362,6 @@ impl RefinementPass for PassCancela {
     }
 }
 
-struct EnsambladorRegistrador {
-    llamado: std::sync::Mutex<bool>,
-}
-
-impl EnsambladorRegistrador {
-    fn new() -> Self {
-        Self {
-            llamado: std::sync::Mutex::new(false),
-        }
-    }
-
-    fn fue_llamado(&self) -> bool {
-        *self.llamado.lock().unwrap()
-    }
-}
-
-impl DocumentAssemblerPort for EnsambladorRegistrador {
-    fn assemble(&self, document: &mut Document) -> Result<(), LayoutError> {
-        *self.llamado.lock().unwrap() = true;
-
-        for pagina in &mut document.pages {
-            pagina.blocks.reverse();
-            for (indice, bloque) in pagina.blocks.iter_mut().enumerate() {
-                bloque.reading_order = indice as u32;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "EnsambladorRegistrador"
-    }
-}
-
 /// Verifica el flujo completo del pipeline con stubs: parseo → OCR → resultado.
 ///
 /// No requiere modelos ONNX ni archivos reales. StubDocumentParser genera
@@ -551,7 +514,6 @@ fn test_pipeline_invoca_refinement_pass_despues_del_blueprint() {
     let refinamiento_ref = Arc::clone(&refinamiento);
 
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(refinamiento)
         .with_refinement_budget(RefinementBudget::new(2));
 
@@ -593,7 +555,6 @@ fn test_pipeline_refinement_budget_limita_passes() {
     let segundo_ref = Arc::clone(&segundo_pass);
 
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(primer_pass)
         .with_refinement_pass(segundo_pass)
         .with_refinement_budget(RefinementBudget::new(1));
@@ -650,7 +611,6 @@ fn test_pipeline_admite_noop_refinement_pass() {
     let parser = Arc::new(StubDocumentParser::new());
     let ocr = Arc::new(StubOcrEngine);
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(Arc::new(NoopRefinementPass::default()))
         .with_refinement_budget(RefinementBudget::new(1));
 
@@ -664,6 +624,33 @@ fn test_pipeline_admite_noop_refinement_pass() {
         .expect("El NoopRefinementPass no debe romper la corrida");
 
     assert!(resultado.blueprint.is_some());
+}
+
+#[test]
+fn test_pipeline_con_blueprint_usa_page_composer_canonico() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let pipeline = OcrPipeline::new(parser, ocr);
+
+    let resultado = pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_blueprint_page_composer.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("El pipeline debe producir blueprint usando PageComposer");
+
+    let blueprint = resultado
+        .blueprint
+        .expect("La ruta canónica debe producir blueprint");
+
+    assert_eq!(blueprint.document_id, resultado.document.id);
+    assert_eq!(blueprint.pages.len(), resultado.document.pages.len());
+    assert_eq!(
+        blueprint.pages[0].elements.len(),
+        resultado.document.pages[0].blocks.len()
+    );
 }
 
 #[test]
@@ -770,7 +757,6 @@ fn test_pipeline_cancelacion_se_observa_entre_refinamientos() {
     let segundo_ref = Arc::clone(&segundo_pass);
 
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(Arc::new(PassCancela {
             cancelacion: Arc::clone(&cancelacion),
         }))
@@ -789,24 +775,4 @@ fn test_pipeline_cancelacion_se_observa_entre_refinamientos() {
 
     assert_eq!(error, PipelineFailure::Cancelado);
     assert_eq!(segundo_ref.llamadas(), 0);
-}
-
-#[test]
-fn test_pipeline_invoca_ensamblador_documento() {
-    let parser = Arc::new(StubDocumentParser::new());
-    let ocr = Arc::new(StubOcrEngine);
-    let ensamblador = Arc::new(EnsambladorRegistrador::new());
-    let ensamblador_ref = Arc::clone(&ensamblador);
-
-    let pipeline = OcrPipeline::new(parser, ocr).with_document_assembler(ensamblador);
-
-    let ruta = Path::new("/tmp/doc_assembler.pdf");
-    pipeline
-        .procesar_documento(ruta, &ProcessingProfile::Balanced, None, None)
-        .expect("Pipeline debe completar ensamblado");
-
-    assert!(
-        ensamblador_ref.fue_llamado(),
-        "El ensamblador final debe ejecutarse al final del pipeline"
-    );
 }

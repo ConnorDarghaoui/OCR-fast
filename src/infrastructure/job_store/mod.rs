@@ -5,8 +5,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+const FILE_LOCK_ESPERA_MS: u64 = 10;
+const FILE_LOCK_TIMEOUT_SECS: u64 = 5;
 
 /// Alias público del puerto de almacenamiento para compatibilidad histórica.
 pub use crate::interfaces::ports::JobStorePort as JobStore;
@@ -113,6 +118,17 @@ impl JobStorePort for InMemoryJobStore {
 /// pero reduce complejidad operativa y evita un formato incremental más frágil.
 pub struct FileJobStore {
     ruta_archivo: PathBuf,
+    write_lock: Arc<Mutex<()>>,
+}
+
+struct FileStoreLockGuard {
+    ruta_lock: PathBuf,
+}
+
+impl Drop for FileStoreLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.ruta_lock);
+    }
 }
 
 impl FileJobStore {
@@ -120,13 +136,17 @@ impl FileJobStore {
     pub fn new() -> Result<Self, JobStoreError> {
         let ruta_archivo = Self::ruta_estandar()?;
 
-        Ok(Self { ruta_archivo })
+        Ok(Self {
+            ruta_archivo,
+            write_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     /// Crea un store en una ruta explícita útil para pruebas o embedding.
     pub fn with_path(ruta: impl Into<PathBuf>) -> Self {
         Self {
             ruta_archivo: ruta.into(),
+            write_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -170,6 +190,67 @@ impl FileJobStore {
         }
 
         Ok(directorio)
+    }
+
+    fn ruta_lock(&self, directorio: &Path) -> PathBuf {
+        let nombre_base = self
+            .ruta_archivo
+            .file_name()
+            .and_then(|nombre| nombre.to_str())
+            .unwrap_or("jobs");
+        directorio.join(format!(".{}.lock", nombre_base))
+    }
+
+    fn try_adquirir_lock_archivo(&self) -> Result<Option<FileStoreLockGuard>, JobStoreError> {
+        let directorio = self.asegurar_directorio_padre()?;
+        let ruta_lock = self.ruta_lock(&directorio);
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ruta_lock)
+        {
+            Ok(mut archivo_lock) => {
+                writeln!(archivo_lock, "pid={}", std::process::id()).map_err(|e| {
+                    JobStoreError::PersistenceError(format!(
+                        "Error escribiendo lock del store: {}",
+                        e
+                    ))
+                })?;
+                archivo_lock.sync_all().map_err(|e| {
+                    JobStoreError::PersistenceError(format!(
+                        "Error sincronizando lock del store: {}",
+                        e
+                    ))
+                })?;
+
+                Ok(Some(FileStoreLockGuard { ruta_lock }))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+            Err(error) => Err(JobStoreError::PersistenceError(format!(
+                "Error creando lock del store: {}",
+                error
+            ))),
+        }
+    }
+
+    fn adquirir_lock_archivo(&self) -> Result<FileStoreLockGuard, JobStoreError> {
+        let inicio = Instant::now();
+
+        loop {
+            if let Some(guard) = self.try_adquirir_lock_archivo()? {
+                return Ok(guard);
+            }
+
+            if inicio.elapsed() >= Duration::from_secs(FILE_LOCK_TIMEOUT_SECS) {
+                return Err(JobStoreError::LockError(format!(
+                    "timeout esperando lock de archivo para {:?}",
+                    self.ruta_archivo
+                )));
+            }
+
+            thread::sleep(Duration::from_millis(FILE_LOCK_ESPERA_MS));
+        }
     }
 
     /// Carga el mapa completo de jobs desde disco.
@@ -276,6 +357,11 @@ impl Default for FileJobStore {
 
 impl JobStorePort for FileJobStore {
     fn save(&self, job: &Job) -> Result<(), JobStoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| JobStoreError::LockError(e.to_string()))?;
+        let _file_guard = self.adquirir_lock_archivo()?;
         let mut jobs = self.cargar()?;
         jobs.insert(job.id.clone(), job.clone());
         self.persistir(&jobs)?;
@@ -291,6 +377,11 @@ impl JobStorePort for FileJobStore {
     }
 
     fn update(&self, job: &Job) -> Result<(), JobStoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| JobStoreError::LockError(e.to_string()))?;
+        let _file_guard = self.adquirir_lock_archivo()?;
         let mut jobs = self.cargar()?;
         if !jobs.contains_key(&job.id) {
             return Err(JobStoreError::NotFound(job.id.clone()));
@@ -308,6 +399,11 @@ impl JobStorePort for FileJobStore {
     }
 
     fn delete(&self, id: &str) -> Result<(), JobStoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| JobStoreError::LockError(e.to_string()))?;
+        let _file_guard = self.adquirir_lock_archivo()?;
         let mut jobs = self.cargar()?;
         if jobs.remove(id).is_none() {
             return Err(JobStoreError::NotFound(id.to_string()));
@@ -330,5 +426,36 @@ pub fn normalizar_jobs_al_arranque(jobs: &mut Vec<Job>) {
             job.error_message =
                 Some("Interrumpido: la aplicacion se cerro durante el procesamiento".to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileJobStore;
+
+    #[test]
+    fn test_lock_archivo_serializa_instancias_distintas() {
+        let directorio = tempfile::tempdir().expect("tmpdir");
+        let ruta = directorio.path().join("jobs.json");
+        let store_a = FileJobStore::with_path(&ruta);
+        let store_b = FileJobStore::with_path(&ruta);
+
+        let guard_a = store_a
+            .try_adquirir_lock_archivo()
+            .expect("lock inicial")
+            .expect("primer store debe adquirir lock");
+
+        let guard_b = store_b
+            .try_adquirir_lock_archivo()
+            .expect("segundo intento");
+        assert!(guard_b.is_none(), "segundo store no debe adquirir el lock");
+
+        drop(guard_a);
+
+        let guard_b = store_b
+            .try_adquirir_lock_archivo()
+            .expect("reintento")
+            .expect("segundo store debe adquirir lock tras liberar");
+        drop(guard_b);
     }
 }
