@@ -246,8 +246,12 @@ impl ExporterPort for LatexExporter {
             .file_name()
             .and_then(|valor| valor.to_str())
             .unwrap_or("documento_assets");
+        let documento_totalmente_visual = blueprint
+            .pages
+            .iter()
+            .all(|pagina| pagina.processing_mode == ProcessingMode::VisualPreservation);
         let plan = match self.mode {
-            _ if blueprint.processing_mode == ProcessingMode::VisualPreservation => {
+            _ if documento_totalmente_visual => {
                 construir_plan_latex_visual_preservation(job, &blueprint, nombre_directorio_assets)?
             }
             LatexExportMode::Semantic => {
@@ -314,7 +318,7 @@ impl ExporterPort for PdfReconstructedExporter {
             let mut operaciones = Vec::new();
             let mut recursos_xobject = lopdf::Dictionary::new();
 
-            if blueprint.processing_mode == ProcessingMode::VisualPreservation
+            if pagina.processing_mode == ProcessingMode::VisualPreservation
                 && agregar_fondo_pagina_visual_pdf(
                     job,
                     pagina.number,
@@ -1035,6 +1039,23 @@ fn construir_plan_latex_semantico(
     let mut assets = Vec::new();
 
     for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+        if pagina.processing_mode == ProcessingMode::VisualPreservation {
+            if let Some(imagen) = construir_imagen_latex_pagina_completa(
+                job,
+                pagina.number,
+                &format!("page{}_full.png", pagina.number),
+                nombre_directorio_assets,
+                &mut assets,
+            )? {
+                body.push(LatexNode::Figure(imagen));
+            }
+
+            if indice_pagina + 1 < blueprint.pages.len() {
+                body.push(LatexNode::PageBreak);
+            }
+            continue;
+        }
+
         let elementos_visibles: Vec<&ElementBlueprint> = pagina
             .elements
             .iter()
@@ -1165,6 +1186,28 @@ fn construir_plan_latex_facsimil(
     let mut body = Vec::new();
     let mut assets = Vec::new();
     for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+        if pagina.processing_mode == ProcessingMode::VisualPreservation {
+            if let Some(imagen) = construir_imagen_latex_pagina_completa(
+                job,
+                pagina.number,
+                &format!("page{}_full.png", pagina.number),
+                nombre_directorio_assets,
+                &mut assets,
+            )? {
+                body.push(LatexNode::PositionedBlock(LatexTextBlock {
+                    width_pt: px_a_pt(pagina.dimensions.width),
+                    x_pt: 0.0,
+                    y_pt: 0.0,
+                    content: LatexContent::Image(imagen),
+                }));
+            }
+
+            if indice_pagina + 1 < blueprint.pages.len() {
+                body.push(LatexNode::PageBreak);
+            }
+            continue;
+        }
+
         for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
             let nombre_asset = format!("page{}_element{}.png", pagina.number, indice_elemento + 1);
             body.push(construir_nodo_latex_facsimil(

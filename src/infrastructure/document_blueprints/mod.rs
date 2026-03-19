@@ -2,7 +2,7 @@ use crate::domain::errors::LayoutError;
 use crate::domain::{
     AlignmentHint, Block, BlockType, Document, DocumentBlueprint, ElementBlueprint, ElementRole,
     EmphasisHint, ImageCropRef, Page, PageBlueprint, ProcessingMode, StyleHints,
-    DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
+    DOCUMENT_METADATA_PAGE_PROCESSING_MODES, DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
 use crate::interfaces::ports::DocumentBlueprintBuilderPort;
 
@@ -34,7 +34,7 @@ impl HighFidelityBlueprintBuilder {
     fn construir_pagina(
         &self,
         pagina: &Page,
-        processing_mode: ProcessingMode,
+        page_processing_mode: ProcessingMode,
     ) -> Result<PageBlueprint, LayoutError> {
         if pagina.dimensions.width == 0 || pagina.dimensions.height == 0 {
             return Err(LayoutError::SegmentationError(format!(
@@ -43,13 +43,13 @@ impl HighFidelityBlueprintBuilder {
             )));
         }
 
-        let total_columnas = match processing_mode {
+        let total_columnas = match page_processing_mode {
             ProcessingMode::DocumentReconstruction => {
                 estimar_columnas(&pagina.blocks, pagina.dimensions.width)
             }
             ProcessingMode::VisualPreservation => 1,
         };
-        let bloques_ordenados = match processing_mode {
+        let bloques_ordenados = match page_processing_mode {
             ProcessingMode::DocumentReconstruction => {
                 ordenar_bloques_para_lectura(&pagina.blocks, pagina.dimensions.width)
             }
@@ -61,7 +61,7 @@ impl HighFidelityBlueprintBuilder {
         for (indice, bloque) in bloques_ordenados.iter().enumerate() {
             let orden_lectura = indice as u32;
             let rol = mapear_rol(bloque.block_type);
-            let usa_dos_columnas = processing_mode == ProcessingMode::DocumentReconstruction
+            let usa_dos_columnas = page_processing_mode == ProcessingMode::DocumentReconstruction
                 && total_columnas == 2
                 && !es_ancla_visual(bloque, pagina.dimensions.width);
             let columnas_elemento = if usa_dos_columnas { 2 } else { 1 };
@@ -88,7 +88,7 @@ impl HighFidelityBlueprintBuilder {
                 orden_lectura,
                 indice_columna,
                 columnas_elemento,
-                processing_mode,
+                page_processing_mode,
                 spacing_before_pt,
                 left_indent_pt,
             ));
@@ -97,6 +97,7 @@ impl HighFidelityBlueprintBuilder {
         Ok(PageBlueprint {
             number: pagina.number,
             dimensions: pagina.dimensions.clone(),
+            processing_mode: page_processing_mode,
             elements: elementos,
         })
     }
@@ -110,12 +111,18 @@ impl Default for HighFidelityBlueprintBuilder {
 
 impl DocumentBlueprintBuilderPort for HighFidelityBlueprintBuilder {
     fn build_blueprint(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError> {
-        let processing_mode = inferir_processing_mode(document);
+        let page_processing_modes = inferir_modos_procesamiento_por_pagina(document);
+        let processing_mode = resumir_processing_mode(&page_processing_modes);
         let mut paginas = Vec::with_capacity(document.pages.len());
-        for pagina in &document.pages {
-            paginas.push(self.construir_pagina(pagina, processing_mode)?);
+        for (pagina, page_processing_mode) in
+            document.pages.iter().zip(page_processing_modes.iter())
+        {
+            paginas.push(self.construir_pagina(pagina, *page_processing_mode)?);
         }
-        if processing_mode == ProcessingMode::DocumentReconstruction {
+        if paginas
+            .iter()
+            .any(|pagina| pagina.processing_mode == ProcessingMode::DocumentReconstruction)
+        {
             marcar_hints_encabezado_pie(&mut paginas);
         }
 
@@ -199,6 +206,12 @@ fn ordenar_bloques_modo_visual<'a>(bloques: &'a [Block]) -> Vec<&'a Block> {
 }
 
 fn ordenar_segmento_en_columnas<'a>(bloques: Vec<&'a Block>, ancho_pagina: u32) -> Vec<&'a Block> {
+    if !segmento_parece_dos_columnas(&bloques, ancho_pagina) {
+        let mut lineal = bloques;
+        lineal.sort_by_key(|bloque| (bloque.bounding_box.y, bloque.bounding_box.x));
+        return lineal;
+    }
+
     let mut izquierda = Vec::new();
     let mut derecha = Vec::new();
     let centro_pagina = ancho_pagina / 2;
@@ -335,37 +348,57 @@ fn inferir_estilo(
     }
 }
 
-fn inferir_processing_mode(document: &Document) -> ProcessingMode {
-    if let Some(forzado) = processing_mode_forzado(document) {
-        return forzado;
+pub(crate) fn inferir_modos_procesamiento_por_pagina(document: &Document) -> Vec<ProcessingMode> {
+    if document.pages.is_empty() {
+        return Vec::new();
     }
 
-    if document.pages.is_empty() {
+    if let Some(forzado) = processing_mode_forzado(document) {
+        return vec![forzado; document.pages.len()];
+    }
+
+    if let Some(persistidos) = processing_modes_persistidos(document) {
+        return persistidos;
+    }
+
+    document
+        .pages
+        .iter()
+        .map(inferir_processing_mode_pagina)
+        .collect()
+}
+
+pub(crate) fn resumir_processing_mode(page_processing_modes: &[ProcessingMode]) -> ProcessingMode {
+    if page_processing_modes.is_empty() {
         return ProcessingMode::DocumentReconstruction;
     }
 
-    let fuente_raster = document
-        .source_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "bmp"
-            )
-        });
-
-    let paginas_visuales = document
-        .pages
+    if page_processing_modes
         .iter()
-        .filter(|pagina| parece_pagina_visual(pagina, fuente_raster))
-        .count();
-
-    if paginas_visuales > 0 && paginas_visuales * 2 >= document.pages.len() {
+        .all(|modo| *modo == ProcessingMode::VisualPreservation)
+    {
         ProcessingMode::VisualPreservation
     } else {
         ProcessingMode::DocumentReconstruction
     }
+}
+
+pub(crate) fn persistir_modos_procesamiento_por_pagina(
+    document: &mut Document,
+    page_processing_modes: &[ProcessingMode],
+) {
+    if page_processing_modes.len() != document.pages.len() {
+        return;
+    }
+
+    let valor = page_processing_modes
+        .iter()
+        .map(serializar_processing_mode)
+        .collect::<Vec<_>>()
+        .join(",");
+    document
+        .metadata
+        .insert(DOCUMENT_METADATA_PAGE_PROCESSING_MODES.to_string(), valor);
 }
 
 fn processing_mode_forzado(document: &Document) -> Option<ProcessingMode> {
@@ -381,7 +414,46 @@ fn processing_mode_forzado(document: &Document) -> Option<ProcessingMode> {
     }
 }
 
-fn parece_pagina_visual(pagina: &Page, fuente_raster: bool) -> bool {
+fn processing_modes_persistidos(document: &Document) -> Option<Vec<ProcessingMode>> {
+    let valor = document
+        .metadata
+        .get(DOCUMENT_METADATA_PAGE_PROCESSING_MODES)?;
+    let modos: Vec<ProcessingMode> = valor
+        .split(',')
+        .filter_map(deserializar_processing_mode)
+        .collect();
+
+    if modos.len() == document.pages.len() {
+        Some(modos)
+    } else {
+        None
+    }
+}
+
+fn serializar_processing_mode(modo: &ProcessingMode) -> &'static str {
+    match modo {
+        ProcessingMode::DocumentReconstruction => "document",
+        ProcessingMode::VisualPreservation => "visual",
+    }
+}
+
+fn deserializar_processing_mode(valor: &str) -> Option<ProcessingMode> {
+    match valor {
+        "document" => Some(ProcessingMode::DocumentReconstruction),
+        "visual" => Some(ProcessingMode::VisualPreservation),
+        _ => None,
+    }
+}
+
+fn inferir_processing_mode_pagina(pagina: &Page) -> ProcessingMode {
+    if parece_pagina_visual(pagina) {
+        ProcessingMode::VisualPreservation
+    } else {
+        ProcessingMode::DocumentReconstruction
+    }
+}
+
+fn parece_pagina_visual(pagina: &Page) -> bool {
     let area_pagina =
         (pagina.dimensions.width.max(1) as f64) * (pagina.dimensions.height.max(1) as f64);
     let mut area_imagen_total = 0.0f64;
@@ -436,14 +508,19 @@ fn parece_pagina_visual(pagina: &Page, fuente_raster: bool) -> bool {
     let sin_semantica_documental = bloques_titulo == 0 && bloques_tabla == 0;
     let texto_fragmentado = bloques_textuales >= 2 && bloques_textuales_anchos <= 1;
     let poca_cobertura_textual = ratio_texto_total <= 0.33;
+    let pagina_rasterizada = pagina.image_data.is_some();
     let parece_ui_fragmentada =
-        fuente_raster && bloques_textuales >= 3 && bloques_textuales_anchos == 0;
+        pagina_rasterizada && bloques_textuales >= 3 && bloques_textuales_anchos == 0;
+    let muchos_bloques_no_documentales = bloques_textuales >= 4 && bloques_textuales_anchos <= 1;
+    let sin_cuerpo_documental = bloques_textuales == 0 || bloques_textuales_anchos == 0;
 
-    fuente_raster
-        && ((tiene_imagen_destacada
-            && sin_semantica_documental
-            && (texto_fragmentado || poca_cobertura_textual))
-            || (parece_ui_fragmentada && poca_cobertura_textual))
+    ((tiene_imagen_destacada
+        && sin_semantica_documental
+        && (texto_fragmentado || poca_cobertura_textual))
+        || (parece_ui_fragmentada && poca_cobertura_textual)
+        || (pagina_rasterizada && sin_semantica_documental && muchos_bloques_no_documentales)
+        || (pagina_rasterizada && tiene_imagen_destacada && sin_cuerpo_documental))
+        && area_pagina > 0.0
 }
 
 fn inferir_bases_columna(bloques: &[&Block], ancho_pagina: u32) -> [u32; 2] {
@@ -535,9 +612,22 @@ fn px_a_pt_local(px: u32) -> f64 {
 }
 
 fn estimar_columnas(bloques: &[Block], ancho_pagina: u32) -> u32 {
+    let bloques: Vec<&Block> = bloques.iter().collect();
+    if segmento_parece_dos_columnas(&bloques, ancho_pagina) {
+        2
+    } else {
+        1
+    }
+}
+
+fn segmento_parece_dos_columnas(bloques: &[&Block], ancho_pagina: u32) -> bool {
     let ancho_pagina = ancho_pagina.max(1);
     let mut izquierda = 0usize;
     let mut derecha = 0usize;
+    let mut min_x_derecha = ancho_pagina;
+    let mut max_x_izquierda = 0u32;
+    let mut top_izquierda = u32::MAX;
+    let mut top_derecha = u32::MAX;
 
     for bloque in bloques {
         if es_ancla_visual(bloque, ancho_pagina) {
@@ -554,16 +644,29 @@ fn estimar_columnas(bloques: &[Block], ancho_pagina: u32) -> u32 {
         let centro = centro_x(bloque);
         if centro <= ancho_pagina / 2 {
             izquierda += 1;
+            max_x_izquierda = max_x_izquierda.max(
+                bloque
+                    .bounding_box
+                    .x
+                    .saturating_add(bloque.bounding_box.width),
+            );
+            top_izquierda = top_izquierda.min(bloque.bounding_box.y);
         } else {
             derecha += 1;
+            min_x_derecha = min_x_derecha.min(bloque.bounding_box.x);
+            top_derecha = top_derecha.min(bloque.bounding_box.y);
         }
     }
 
-    if izquierda >= 1 && derecha >= 1 {
-        2
-    } else {
-        1
+    if izquierda < 2 || derecha < 2 {
+        return false;
     }
+
+    let gutter_minimo = ancho_pagina.saturating_mul(4) / 100;
+    let gutter = min_x_derecha.saturating_sub(max_x_izquierda);
+    let diferencia_top = top_izquierda.abs_diff(top_derecha);
+
+    gutter >= gutter_minimo && diferencia_top <= 220
 }
 
 fn es_ancla_visual(bloque: &Block, ancho_pagina: u32) -> bool {
@@ -609,8 +712,17 @@ fn marcar_hints_encabezado_pie(paginas: &mut [PageBlueprint]) {
             continue;
         };
 
-        let pagina_previa = paginas_previas.last();
-        let pagina_siguiente = paginas_siguientes.first();
+        if pagina_actual.processing_mode != ProcessingMode::DocumentReconstruction {
+            continue;
+        }
+
+        let pagina_previa = paginas_previas
+            .iter()
+            .rev()
+            .find(|pagina| pagina.processing_mode == ProcessingMode::DocumentReconstruction);
+        let pagina_siguiente = paginas_siguientes
+            .iter()
+            .find(|pagina| pagina.processing_mode == ProcessingMode::DocumentReconstruction);
         let altura = pagina_actual.dimensions.height.max(1);
 
         for indice_elemento in 0..pagina_actual.elements.len() {

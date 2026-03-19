@@ -39,6 +39,8 @@ pub struct PageBlueprint {
     pub number: u32,
     /// Dimensiones raster originales.
     pub dimensions: Dimensions,
+    /// Estrategia efectiva aplicada a esta página concreta.
+    pub processing_mode: ProcessingMode,
     /// Elementos visuales en orden canónico.
     pub elements: Vec<ElementBlueprint>,
 }

@@ -137,8 +137,82 @@ fn documento_captura_marketplace() -> Document {
                 bloque(BlockType::Text, 760, 370, 500, 90, 2, "$129.99 Buy it now"),
                 bloque(BlockType::Text, 760, 520, 420, 120, 3, "Ships from Panama"),
             ],
-            image_data: None,
+            image_data: Some(vec![1, 2, 3]),
         }],
+        metadata: HashMap::new(),
+    }
+}
+
+fn documento_captura_marketplace_pdf() -> Document {
+    Document {
+        id: "doc-captura-marketplace-pdf".to_string(),
+        source_path: PathBuf::from("/tmp/captura-ebay.pdf"),
+        pages: vec![Page {
+            number: 1,
+            dimensions: Dimensions {
+                width: 1440,
+                height: 1800,
+            },
+            blocks: vec![
+                bloque(BlockType::Image, 60, 220, 620, 680, 0, ""),
+                bloque(
+                    BlockType::Text,
+                    760,
+                    250,
+                    420,
+                    70,
+                    1,
+                    "Vintage camera listing",
+                ),
+                bloque(BlockType::Text, 760, 370, 500, 90, 2, "$129.99 Buy it now"),
+                bloque(BlockType::Text, 760, 520, 420, 120, 3, "Ships from Panama"),
+            ],
+            image_data: Some(vec![4, 5, 6]),
+        }],
+        metadata: HashMap::new(),
+    }
+}
+
+fn documento_pdf_hibrido() -> Document {
+    Document {
+        id: "doc-pdf-hibrido".to_string(),
+        source_path: PathBuf::from("/tmp/documento-hibrido.pdf"),
+        pages: vec![
+            documento_captura_marketplace_pdf()
+                .pages
+                .into_iter()
+                .next()
+                .unwrap(),
+            Page {
+                number: 2,
+                dimensions: Dimensions {
+                    width: 1200,
+                    height: 1800,
+                },
+                blocks: vec![
+                    bloque(BlockType::Title, 120, 80, 960, 120, 0, "Capitulo 2"),
+                    bloque(
+                        BlockType::Text,
+                        120,
+                        260,
+                        900,
+                        180,
+                        1,
+                        "texto corrido de libro",
+                    ),
+                    bloque(
+                        BlockType::Text,
+                        120,
+                        500,
+                        900,
+                        180,
+                        2,
+                        "segundo parrafo ancho",
+                    ),
+                ],
+                image_data: Some(vec![7, 8, 9]),
+            },
+        ],
         metadata: HashMap::new(),
     }
 }
@@ -275,6 +349,10 @@ fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
         blueprint.processing_mode,
         ProcessingMode::VisualPreservation
     );
+    assert_eq!(
+        blueprint.pages[0].processing_mode,
+        ProcessingMode::VisualPreservation
+    );
     assert!(
         blueprint.pages[0]
             .elements
@@ -295,6 +373,38 @@ fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
             .iter()
             .any(|elemento| elemento.suspected_header || elemento.suspected_footer),
         "Las capturas de interfaz no deben pasar por hints documentales de header/footer"
+    );
+}
+
+#[test]
+fn test_blueprint_detecta_captura_visual_dentro_de_pdf() {
+    let blueprint = HighFidelityBlueprintBuilder::new()
+        .build_blueprint(&documento_captura_marketplace_pdf())
+        .expect("El builder debe clasificar una captura PDF como visual");
+
+    assert_eq!(
+        blueprint.pages[0].processing_mode,
+        ProcessingMode::VisualPreservation
+    );
+}
+
+#[test]
+fn test_blueprint_soporta_modo_por_pagina_en_documento_hibrido() {
+    let blueprint = HighFidelityBlueprintBuilder::new()
+        .build_blueprint(&documento_pdf_hibrido())
+        .expect("El builder debe clasificar documentos mixtos por pagina");
+
+    assert_eq!(
+        blueprint.processing_mode,
+        ProcessingMode::DocumentReconstruction
+    );
+    assert_eq!(
+        blueprint.pages[0].processing_mode,
+        ProcessingMode::VisualPreservation
+    );
+    assert_eq!(
+        blueprint.pages[1].processing_mode,
+        ProcessingMode::DocumentReconstruction
     );
 }
 

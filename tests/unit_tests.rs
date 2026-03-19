@@ -442,6 +442,7 @@ mod exporter_tests {
     use ocrfast::domain::{
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableCellAlignment, TableCellStyle, TableStructure,
+        DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
     };
     use ocrfast::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
     use ocrfast::infrastructure::exporters::{
@@ -1793,6 +1794,85 @@ mod exporter_tests {
         assert!(indice_izquierda < indice_derecha);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_assembler_preserva_orden_visual_en_pagina_forzada() {
+        let mut documento = Document {
+            id: "visual-page".to_string(),
+            source_path: std::path::PathBuf::from("/tmp/captura.pdf"),
+            pages: vec![Page {
+                number: 1,
+                dimensions: Dimensions {
+                    width: 1200,
+                    height: 1600,
+                },
+                image_data: Some(png_color_sintetico(1200, 1600, [245, 245, 245])),
+                blocks: vec![
+                    Block {
+                        block_type: BlockType::Image,
+                        bounding_box: Rectangle {
+                            x: 80,
+                            y: 120,
+                            width: 500,
+                            height: 500,
+                        },
+                        content: String::new(),
+                        confidence: 0.95,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
+                    },
+                    Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 760,
+                            y: 160,
+                            width: 280,
+                            height: 40,
+                        },
+                        content: "Precio".to_string(),
+                        confidence: 0.90,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 1,
+                    },
+                    Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 100,
+                            y: 760,
+                            width: 420,
+                            height: 60,
+                        },
+                        content: "Descripcion".to_string(),
+                        confidence: 0.90,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 2,
+                    },
+                ],
+            }],
+            metadata: HashMap::from([(
+                DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
+                "visual".to_string(),
+            )]),
+        };
+
+        LayoutGuidedDocumentAssembler::new()
+            .assemble(&mut documento)
+            .unwrap();
+
+        let orden: Vec<_> = documento.pages[0]
+            .blocks
+            .iter()
+            .map(|bloque| bloque.content.as_str())
+            .collect();
+
+        assert_eq!(orden, vec!["", "Precio", "Descripcion"]);
     }
 }
 
