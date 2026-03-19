@@ -5,7 +5,6 @@ use crate::domain::{
     DOCUMENT_METADATA_PAGE_PROCESSING_MODES, DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
 use crate::infrastructure::automata::BlockAutomata;
-use crate::interfaces::ports::PageComposerPort;
 
 /// Capa única de composición por página para renderizadores ricos.
 ///
@@ -140,21 +139,6 @@ impl PageComposer {
 impl Default for PageComposer {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl PageComposerPort for PageComposer {
-    fn compose(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError> {
-        Self::compose(self, document)
-    }
-
-    fn apply_order(&self, document: &mut Document) -> Result<(), LayoutError> {
-        self.apply_document_order(document);
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "PageComposer"
     }
 }
 

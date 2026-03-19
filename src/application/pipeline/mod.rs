@@ -6,8 +6,7 @@ pub mod refinement;
 use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
 use crate::infrastructure::page_composer::PageComposer;
 use crate::interfaces::ports::{
-    DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort,
-    OcrEnginePort, PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
+    DocumentParserPort, OcrEnginePort, PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
 };
 pub use refinement::{
     DenoisePass, DeskewPass, NoopRefinementPass, RefinementBudget, RefinementContext,
@@ -26,11 +25,9 @@ use thiserror::Error;
 pub enum PipelineStage {
     Parseo,
     Preprocesamiento,
-    Layout,
     Ocr,
     Tablas,
     Postproceso,
-    Ensamblado,
     Blueprint,
     Refinamiento,
 }
@@ -40,11 +37,9 @@ impl std::fmt::Display for PipelineStage {
         let nombre = match self {
             Self::Parseo => "parseo",
             Self::Preprocesamiento => "preprocesamiento",
-            Self::Layout => "layout",
             Self::Ocr => "ocr",
             Self::Tablas => "tablas",
             Self::Postproceso => "postproceso",
-            Self::Ensamblado => "ensamblado",
             Self::Blueprint => "blueprint",
             Self::Refinamiento => "refinamiento",
         };
@@ -130,14 +125,11 @@ pub struct PipelineResult {
 pub struct OcrPipeline {
     parser: Arc<dyn DocumentParserPort>,
     preprocesador: Option<Arc<dyn PreprocessorPort>>,
-    fallback_layout_engine: Option<Arc<dyn LayoutEnginePort>>,
     ocr_engine: Arc<dyn OcrEnginePort>,
     table_analyzer: Option<Arc<dyn TableAnalyzerPort>>,
     postprocesador: Option<Arc<dyn PostprocessorPort>>,
-    legacy_blueprint_builder: Option<Arc<dyn DocumentBlueprintBuilderPort>>,
     refinement_passes: Vec<Arc<dyn RefinementPass>>,
     refinement_budget: RefinementBudget,
-    legacy_document_assembler: Option<Arc<dyn DocumentAssemblerPort>>,
 }
 
 impl OcrPipeline {
@@ -152,30 +144,17 @@ impl OcrPipeline {
         Self {
             parser,
             preprocesador: None,
-            fallback_layout_engine: None,
             ocr_engine,
             table_analyzer: None,
             postprocesador: None,
-            legacy_blueprint_builder: None,
             refinement_passes: Vec::new(),
             refinement_budget: RefinementBudget::default(),
-            legacy_document_assembler: None,
         }
     }
 
     /// Añade una fase de preprocesamiento previa al análisis de layout.
     pub fn with_preprocessor(mut self, preprocesador: Arc<dyn PreprocessorPort>) -> Self {
         self.preprocesador = Some(preprocesador);
-        self
-    }
-
-    /// Añade un motor externo de layout solo como fallback legacy.
-    ///
-    /// La ruta canónica del producto espera que el OCR principal ya sea dueño
-    /// del layout. Este hook se conserva para engines alternativos o pruebas
-    /// que todavía dependan de un layout heurístico separado.
-    pub fn with_layout_engine(mut self, layout_engine: Arc<dyn LayoutEnginePort>) -> Self {
-        self.fallback_layout_engine = Some(layout_engine);
         self
     }
 
@@ -191,20 +170,6 @@ impl OcrPipeline {
         self
     }
 
-    /// Añade una fase opcional de reconstrucción visual para exportadores ricos.
-    ///
-    /// Este builder se mantiene como override legacy. La ruta canónica para
-    /// `procesar_documento_con_blueprint()` ya es `PageComposer`; por eso este
-    /// puerto solo debería existir mientras haya callers históricos o pruebas
-    /// que necesiten validar la compatibilidad.
-    pub fn with_blueprint_builder(
-        mut self,
-        blueprint_builder: Arc<dyn DocumentBlueprintBuilderPort>,
-    ) -> Self {
-        self.legacy_blueprint_builder = Some(blueprint_builder);
-        self
-    }
-
     /// Añade un pass de refinamiento opcional en la etapa declarada por el pass.
     pub fn with_refinement_pass(mut self, refinement_pass: Arc<dyn RefinementPass>) -> Self {
         self.refinement_passes.push(refinement_pass);
@@ -214,19 +179,6 @@ impl OcrPipeline {
     /// Configura el presupuesto máximo de passes por corrida del pipeline.
     pub fn with_refinement_budget(mut self, refinement_budget: RefinementBudget) -> Self {
         self.refinement_budget = refinement_budget;
-        self
-    }
-
-    /// Añade una fase final de ensamblado solo para compatibilidad legacy.
-    ///
-    /// La política canónica de composición ya vive en `PageComposer`. Este hook
-    /// existe para tests o callers antiguos que aún quieran mutar el `Document`
-    /// antes de construir el blueprint.
-    pub fn with_document_assembler(
-        mut self,
-        ensamblador_documento: Arc<dyn DocumentAssemblerPort>,
-    ) -> Self {
-        self.legacy_document_assembler = Some(ensamblador_documento);
         self
     }
 
@@ -333,32 +285,6 @@ impl OcrPipeline {
             &mut refinement_consumidos,
         )?;
 
-        if let Some(ref layout_engine) = self.fallback_layout_engine {
-            self.notificar(
-                notificador,
-                PipelineEvent::FaseCambiada {
-                    fase: "Analizando layout".to_string(),
-                    progreso: 0.30,
-                },
-            );
-            for (i, pagina) in documento.pages.iter_mut().enumerate() {
-                let bloques = layout_engine
-                    .analyze(pagina)
-                    .map_err(|error| Self::error_fase(PipelineStage::Layout, error))?;
-                pagina.blocks = bloques;
-                self.notificar(
-                    notificador,
-                    PipelineEvent::ProgresoActualizado {
-                        pagina_actual: (i + 1) as u32,
-                        total_paginas,
-                    },
-                );
-            }
-            log::info!("Pipeline: layout completado ({})", layout_engine.name());
-        }
-
-        self.verificar_cancelacion(cancelacion)?;
-
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -431,25 +357,6 @@ impl OcrPipeline {
             &mut refinement_consumidos,
         )?;
 
-        if let Some(ref ensamblador_documento) = self.legacy_document_assembler {
-            self.notificar(
-                notificador,
-                PipelineEvent::FaseCambiada {
-                    fase: "Reconstruyendo documento final".to_string(),
-                    progreso: 0.95,
-                },
-            );
-            ensamblador_documento
-                .assemble(&mut documento)
-                .map_err(|error| Self::error_fase(PipelineStage::Ensamblado, error))?;
-            log::info!(
-                "Pipeline: ensamblado final completado ({})",
-                ensamblador_documento.name()
-            );
-        }
-
-        self.verificar_cancelacion(cancelacion)?;
-
         let mut blueprint = if construir_blueprint {
             self.notificar(
                 notificador,
@@ -492,22 +399,11 @@ impl OcrPipeline {
         &self,
         documento: &Document,
     ) -> Result<DocumentBlueprint, PipelineFailure> {
-        if let Some(ref blueprint_builder) = self.legacy_blueprint_builder {
-            let blueprint = blueprint_builder
-                .build_blueprint(documento)
-                .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
-            log::info!(
-                "Pipeline: blueprint visual completado ({}) [compat]",
-                blueprint_builder.name()
-            );
-            Ok(blueprint)
-        } else {
-            let blueprint = PageComposer::new()
-                .compose(documento)
-                .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
-            log::info!("Pipeline: blueprint visual completado (PageComposer)");
-            Ok(blueprint)
-        }
+        let blueprint = PageComposer::new()
+            .compose(documento)
+            .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
+        log::info!("Pipeline: blueprint visual completado (PageComposer)");
+        Ok(blueprint)
     }
 
     fn verificar_cancelacion(

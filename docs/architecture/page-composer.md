@@ -47,21 +47,17 @@ La relación correcta entre ambos módulos es:
 Si `BlockAutomata` empieza a ordenar bloques o si el exportador vuelve a inferir
 el `ProcessingMode`, el ownership vuelve a quedar duplicado.
 
-## Compatibilidad
+## API actual
 
-`HighFidelityBlueprintBuilder` y `LayoutGuidedDocumentAssembler` siguen
-existiendo como adaptadores finos para no romper la API actual, pero la lógica
-real ya vive en `PageComposer`.
-
-Esos dos módulos ya no deben ganar heurísticas nuevas. Cualquier cambio de
-composición, orden o política visual debe entrar primero en `PageComposer` y
-solo propagarse a los adaptadores si todavía existen callers legacy.
+`PageComposer` ya es la API concreta del producto para composición por página.
+No existe una segunda capa de builder o assembler que vuelva a envolver esta
+política.
 
 ## Beneficio arquitectónico
 
-La salida rica deja de nacer de dos módulos distintos con heurísticas
-parcialmente superpuestas. Eso reduce divergencia entre TXT, PDF y LaTeX, y hace
-que los cambios de orden o de política visual se concentren en un solo punto.
+La salida rica deja de nacer de varias capas con heurísticas parcialmente
+superpuestas. Eso reduce divergencia entre TXT, PDF y LaTeX, y hace que los
+cambios de orden o de política visual se concentren en un solo punto.
 
 La regla operacional es simple:
 

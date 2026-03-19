@@ -2,7 +2,7 @@ use crate::domain::errors::{
     DocumentError, ExportError, JobStoreError, LayoutError, ModelDownloadError, OcrError,
     PreprocessError,
 };
-use crate::domain::{Block, Document, DocumentBlueprint, Job, Page, ProcessingProfile};
+use crate::domain::{Block, Document, Job, Page, ProcessingProfile};
 use std::path::Path;
 
 /// Contrato para rasterizar páginas PDF sin acoplar el pipeline a Pdfium.
@@ -173,72 +173,6 @@ pub trait TableAnalyzerPort: Send + Sync {
     /// Detecta estructura interna en bloques marcados como tabla.
     fn analyze_tables(&self, document: &mut Document) -> Result<(), LayoutError>;
     /// Nombre del analizador para observabilidad y soporte.
-    fn name(&self) -> &str;
-}
-
-/// Contrato legacy para reconstrucción visual posterior a OCR y layout.
-///
-/// Este puerto se mantiene por compatibilidad con tests y callers históricos.
-/// La implementación canónica de composición ahora vive en `PageComposerPort`.
-///
-/// El builder traduce el árbol crudo del dominio a una representación intermedia
-/// orientada a exportadores ricos como LaTeX o PDF reconstruido, pero ya no
-/// debería contener heurística propia. Si se necesita cambiar política de
-/// página, orden o modo visual/documental, el cambio debe ocurrir en
-/// `PageComposerPort` y este puerto solo debería delegar.
-///
-/// # Trade-offs
-///
-/// El contrato opera sobre `Document` completo y no sobre páginas aisladas porque
-/// el exportador necesita una vista coherente del documento final. Esa decisión
-/// simplifica exportación a costa de impedir streaming total en esta frontera.
-pub trait DocumentBlueprintBuilderPort: Send + Sync {
-    /// Construye un blueprint visual listo para exportación de alta fidelidad.
-    ///
-    /// # Errors
-    ///
-    /// Retorna `LayoutError` cuando las invariantes geométricas del documento son
-    /// insuficientes para producir un orden visual reproducible.
-    fn build_blueprint(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError>;
-
-    /// Nombre estable del builder para trazabilidad y diagnóstico.
-    fn name(&self) -> &str;
-}
-
-/// Contrato legacy para ensamblar el documento final a partir del layout detectado.
-///
-/// Este puerto se mantiene por compatibilidad. La política canónica de orden y
-/// composición ahora vive en `PageComposerPort`.
-///
-/// No debería seguir ganando heurísticas nuevas; su papel es delegar en el
-/// compositor unificado mientras existan callers antiguos.
-pub trait DocumentAssemblerPort: Send + Sync {
-    /// Reordena y normaliza el documento para consumo final.
-    fn assemble(&self, document: &mut Document) -> Result<(), LayoutError>;
-    /// Identificador estable del ensamblador para logs y diagnóstico.
-    fn name(&self) -> &str;
-}
-
-/// Contrato canónico de composición por página para exportación rica.
-///
-/// Este puerto colapsa la responsabilidad histórica de ensamblar y luego
-/// reconstruir un blueprint. La implementación decide el modo efectivo por
-/// página, fija el orden de lectura y proyecta un modelo visual estable.
-///
-/// Cualquier decisión nueva sobre:
-/// - `ProcessingMode`
-/// - orden de lectura
-/// - hints de encabezado/pie
-/// - política visual vs documental
-///
-/// debe entrar aquí primero. Los exportadores deben consumir su resultado, no
-/// reimplementar la política.
-pub trait PageComposerPort: Send + Sync {
-    /// Compone el documento a un modelo visual listo para render.
-    fn compose(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError>;
-    /// Reordena el documento in-place con la misma política del compositor.
-    fn apply_order(&self, document: &mut Document) -> Result<(), LayoutError>;
-    /// Identificador estable del compositor para logs y diagnóstico.
     fn name(&self) -> &str;
 }
 

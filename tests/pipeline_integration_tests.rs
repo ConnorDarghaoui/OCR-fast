@@ -4,17 +4,12 @@ use ocrfast::application::pipeline::{
     RefinementContext, RefinementPass, RefinementStage,
 };
 use ocrfast::domain::errors::DocumentError;
-use ocrfast::domain::errors::{LayoutError, OcrError};
+use ocrfast::domain::errors::OcrError;
 use ocrfast::domain::{
-    AlignmentHint, Block, BlockType, Dimensions, Document, DocumentBlueprint, ElementBlueprint,
-    ElementRole, EmphasisHint, Page, PageBlueprint, ProcessingMode, ProcessingProfile, Rectangle,
-    StyleHints,
+    Block, BlockType, Dimensions, Document, DocumentBlueprint, Page, ProcessingProfile, Rectangle,
 };
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
-use ocrfast::interfaces::ports::{
-    DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort,
-    OcrEnginePort, PostprocessorPort,
-};
+use ocrfast::interfaces::ports::{DocumentParserPort, OcrEnginePort, PostprocessorPort};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -186,27 +181,6 @@ impl DocumentParserPort for ParserBloquesDebiles {
     }
 }
 
-struct ParserSinBloques;
-
-impl DocumentParserPort for ParserSinBloques {
-    fn parse(&self, path: &Path) -> Result<Document, DocumentError> {
-        Ok(Document {
-            id: "doc-no-layout".to_string(),
-            source_path: path.to_path_buf(),
-            pages: vec![Page {
-                number: 1,
-                dimensions: Dimensions {
-                    width: 1000,
-                    height: 1400,
-                },
-                blocks: Vec::new(),
-                image_data: None,
-            }],
-            metadata: HashMap::new(),
-        })
-    }
-}
-
 struct OcrEngineDeRefuerzo;
 
 impl OcrEnginePort for OcrEngineDeRefuerzo {
@@ -241,48 +215,6 @@ impl OcrEnginePort for OcrEngineDeRefuerzo {
 
     fn name(&self) -> &str {
         "OcrEngineDeRefuerzo"
-    }
-}
-
-struct LayoutRegistrador {
-    llamado: std::sync::Mutex<bool>,
-}
-
-impl LayoutRegistrador {
-    fn new() -> Self {
-        Self {
-            llamado: std::sync::Mutex::new(false),
-        }
-    }
-
-    fn fue_llamado(&self) -> bool {
-        *self.llamado.lock().unwrap()
-    }
-}
-
-impl LayoutEnginePort for LayoutRegistrador {
-    fn analyze(&self, page: &Page) -> Result<Vec<Block>, LayoutError> {
-        *self.llamado.lock().unwrap() = true;
-
-        Ok(vec![Block {
-            block_type: BlockType::Text,
-            bounding_box: Rectangle {
-                x: 80,
-                y: 120,
-                width: page.dimensions.width - 160,
-                height: 160,
-            },
-            content: String::new(),
-            confidence: 0.0,
-            layout_confidence: Some(0.88),
-            embedded_image: None,
-            table_structure: None,
-            reading_order: 0,
-        }])
-    }
-
-    fn name(&self) -> &str {
-        "LayoutRegistrador"
     }
 }
 
@@ -427,111 +359,6 @@ impl RefinementPass for PassCancela {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.cancelacion.store(true, Ordering::Relaxed);
         Ok(())
-    }
-}
-
-struct EnsambladorRegistrador {
-    llamado: std::sync::Mutex<bool>,
-}
-
-impl EnsambladorRegistrador {
-    fn new() -> Self {
-        Self {
-            llamado: std::sync::Mutex::new(false),
-        }
-    }
-
-    fn fue_llamado(&self) -> bool {
-        *self.llamado.lock().unwrap()
-    }
-}
-
-impl DocumentAssemblerPort for EnsambladorRegistrador {
-    fn assemble(&self, document: &mut Document) -> Result<(), LayoutError> {
-        *self.llamado.lock().unwrap() = true;
-
-        for pagina in &mut document.pages {
-            pagina.blocks.reverse();
-            for (indice, bloque) in pagina.blocks.iter_mut().enumerate() {
-                bloque.reading_order = indice as u32;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "EnsambladorRegistrador"
-    }
-}
-
-struct BlueprintBuilderRegistrador {
-    llamado: std::sync::Mutex<bool>,
-}
-
-impl BlueprintBuilderRegistrador {
-    fn new() -> Self {
-        Self {
-            llamado: std::sync::Mutex::new(false),
-        }
-    }
-
-    fn fue_llamado(&self) -> bool {
-        *self.llamado.lock().unwrap()
-    }
-}
-
-impl DocumentBlueprintBuilderPort for BlueprintBuilderRegistrador {
-    fn build_blueprint(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError> {
-        *self.llamado.lock().unwrap() = true;
-
-        let pagina = document
-            .pages
-            .first()
-            .expect("stub parser debe generar pagina");
-
-        Ok(DocumentBlueprint {
-            document_id: document.id.clone(),
-            source_path: "legacy-builder".to_string(),
-            processing_mode: ProcessingMode::DocumentReconstruction,
-            pages: vec![PageBlueprint {
-                number: pagina.number,
-                dimensions: pagina.dimensions.clone(),
-                processing_mode: ProcessingMode::DocumentReconstruction,
-                elements: vec![ElementBlueprint {
-                    role: ElementRole::Unknown,
-                    bounding_box: Rectangle {
-                        x: 0,
-                        y: 0,
-                        width: pagina.dimensions.width,
-                        height: 1,
-                    },
-                    reading_order: 0,
-                    column_index: 0,
-                    total_columns: 1,
-                    text: "compat-builder".to_string(),
-                    ocr_confidence: None,
-                    layout_confidence: None,
-                    suspected_header: false,
-                    suspected_footer: false,
-                    table: None,
-                    image_crop: None,
-                    style: StyleHints {
-                        alignment: AlignmentHint::Left,
-                        emphasis: EmphasisHint::Regular,
-                        font_scale: 1.0,
-                        spacing_before_pt: 0.0,
-                        left_indent_pt: 0.0,
-                        keep_with_next: false,
-                        preserve_positioning: false,
-                    },
-                }],
-            }],
-        })
-    }
-
-    fn name(&self) -> &str {
-        "BlueprintBuilderRegistrador"
     }
 }
 
@@ -800,7 +627,7 @@ fn test_pipeline_admite_noop_refinement_pass() {
 }
 
 #[test]
-fn test_pipeline_con_blueprint_usa_page_composer_sin_builder_legacy() {
+fn test_pipeline_con_blueprint_usa_page_composer_canonico() {
     let parser = Arc::new(StubDocumentParser::new());
     let ocr = Arc::new(StubOcrEngine);
     let pipeline = OcrPipeline::new(parser, ocr);
@@ -816,7 +643,7 @@ fn test_pipeline_con_blueprint_usa_page_composer_sin_builder_legacy() {
 
     let blueprint = resultado
         .blueprint
-        .expect("La ruta canónica debe producir blueprint aun sin builder legacy");
+        .expect("La ruta canónica debe producir blueprint");
 
     assert_eq!(blueprint.document_id, resultado.document.id);
     assert_eq!(blueprint.pages.len(), resultado.document.pages.len());
@@ -824,58 +651,6 @@ fn test_pipeline_con_blueprint_usa_page_composer_sin_builder_legacy() {
         blueprint.pages[0].elements.len(),
         resultado.document.pages[0].blocks.len()
     );
-}
-
-#[test]
-fn test_pipeline_layout_engine_fallback_se_invoca_si_se_configura() {
-    let parser = Arc::new(ParserSinBloques);
-    let ocr = Arc::new(StubOcrEngine);
-    let layout = Arc::new(LayoutRegistrador::new());
-    let layout_ref = Arc::clone(&layout);
-    let pipeline = OcrPipeline::new(parser, ocr).with_layout_engine(layout);
-
-    let resultado = pipeline
-        .procesar_documento(
-            Path::new("/tmp/doc_layout_fallback_legacy.pdf"),
-            &ProcessingProfile::Balanced,
-            None,
-            None,
-        )
-        .expect("El fallback layout legacy debe seguir funcionando si se configura");
-
-    assert!(layout_ref.fue_llamado());
-    assert_eq!(resultado.pages[0].blocks.len(), 1);
-    assert_eq!(
-        resultado.pages[0].blocks[0].content,
-        "Texto OCR simulado bloque 1"
-    );
-}
-
-#[test]
-fn test_pipeline_con_blueprint_admite_override_del_builder_legacy() {
-    let parser = Arc::new(StubDocumentParser::new());
-    let ocr = Arc::new(StubOcrEngine);
-    let builder = Arc::new(BlueprintBuilderRegistrador::new());
-    let builder_ref = Arc::clone(&builder);
-    let pipeline = OcrPipeline::new(parser, ocr).with_blueprint_builder(builder);
-
-    let resultado = pipeline
-        .procesar_documento_con_blueprint(
-            Path::new("/tmp/doc_blueprint_legacy_override.pdf"),
-            &ProcessingProfile::Balanced,
-            None,
-            None,
-        )
-        .expect("El pipeline debe soportar el hook legacy del builder");
-
-    let blueprint = resultado
-        .blueprint
-        .expect("El override legacy debe producir un blueprint");
-
-    assert!(builder_ref.fue_llamado());
-    assert_eq!(blueprint.source_path, "legacy-builder");
-    assert_eq!(blueprint.pages.len(), 1);
-    assert_eq!(blueprint.pages[0].elements[0].text, "compat-builder");
 }
 
 #[test]
@@ -1000,24 +775,4 @@ fn test_pipeline_cancelacion_se_observa_entre_refinamientos() {
 
     assert_eq!(error, PipelineFailure::Cancelado);
     assert_eq!(segundo_ref.llamadas(), 0);
-}
-
-#[test]
-fn test_pipeline_invoca_ensamblador_documento_legacy_si_se_configura() {
-    let parser = Arc::new(StubDocumentParser::new());
-    let ocr = Arc::new(StubOcrEngine);
-    let ensamblador = Arc::new(EnsambladorRegistrador::new());
-    let ensamblador_ref = Arc::clone(&ensamblador);
-
-    let pipeline = OcrPipeline::new(parser, ocr).with_document_assembler(ensamblador);
-
-    let ruta = Path::new("/tmp/doc_assembler.pdf");
-    pipeline
-        .procesar_documento(ruta, &ProcessingProfile::Balanced, None, None)
-        .expect("Pipeline debe completar ensamblado");
-
-    assert!(
-        ensamblador_ref.fue_llamado(),
-        "El ensamblador final debe ejecutarse al final del pipeline"
-    );
 }

@@ -1,9 +1,5 @@
 /// Autómatas deterministas de resolución por bloque.
 pub mod automata;
-/// Reconstrucción final del documento guiada por layout.
-pub mod document_assemblers;
-/// Builders de representación visual para exportación de alta fidelidad.
-pub mod document_blueprints;
 /// Adaptadores concretos de parsing y render de documentos.
 pub mod document_parsers;
 /// Materializadores de salida para TXT, LaTeX, PDF y JSON.

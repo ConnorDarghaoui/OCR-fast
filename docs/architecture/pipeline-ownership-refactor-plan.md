@@ -20,8 +20,8 @@ across too many layers:
   policy.
 - `refinement.rs` mixes useful page preprocessing with more invasive OCR retry
   logic.
-- Compatibility adapters still exist for `DocumentBlueprintBuilderPort` and
-  `DocumentAssemblerPort`, even though they now delegate to `PageComposer`.
+- Historical compatibility adapters used to exist around composition, but the
+  target state is a single concrete path through `PageComposer`.
 
 This split makes the system harder to reason about than necessary. The same
 document can have geometry, ordering, or rendering policy touched in more than
@@ -66,11 +66,9 @@ These invariants must hold during and after the refactor:
    - `PreprocessorPort` already exists.
    - `DenoisePass` and `DeskewPass` duplicate page-level image transformation.
 
-4. Compatibility layer ownership
-   - `HighFidelityBlueprintBuilder` is now a compatibility wrapper around
-     `PageComposer`.
-   - `LayoutGuidedDocumentAssembler` is now a compatibility wrapper around
-     `PageComposer::apply_document_order`.
+4. Public API ownership
+   - `PageComposer` is the concrete page-composition API.
+   - The pipeline no longer exposes parallel builder/assembler hooks.
 
 ### Target ownership
 
@@ -178,21 +176,14 @@ Stop direct composition policy from leaking elsewhere.
 
 - `src/infrastructure/page_composer/mod.rs`
 - `src/infrastructure/exporters/mod.rs`
-- `src/infrastructure/document_blueprints/mod.rs`
-- `src/infrastructure/document_assemblers/mod.rs`
-
-#### Changes
-
 - Ensure exporter helper code only gets composed pages from `PageComposer`.
-- Reduce `HighFidelityBlueprintBuilder` and `LayoutGuidedDocumentAssembler` to
-  the thinnest possible compatibility wrappers.
-- Remove any duplicated helpers from wrappers if the real logic already lives in
-  `PageComposer`.
+- Remove duplicated composition wrappers once `PageComposer` becomes the only
+  caller-facing composition path.
 
 #### Acceptance criteria
 
 - There is one real composition implementation in the codebase.
-- Wrappers contain delegation, not business logic.
+- No extra wrapper layer remains between callers and `PageComposer`.
 
 #### Regression checks
 
@@ -288,7 +279,7 @@ integrated orchestrator.
 - Make it explicit that:
   - `LayoutEnginePort` is optional or legacy
   - integrated ONNX path is the canonical path
-- Review whether `with_layout_engine(...)` remains necessary in the default
+- Review whether any explicit fallback layout hook still belongs in the default
   runtime path.
 
 #### Acceptance criteria
@@ -303,30 +294,28 @@ integrated orchestrator.
 - TUI runtime boot still works
 - parser + OCR path still passes integration tests
 
-### Commit 6: Demote legacy composition ports to compatibility-only status
+### Commit 6: Remove legacy composition ports from the public API
 
 #### Goal
 
-Make it explicit which ports are still first-class and which are transitional.
+Delete transitional composition hooks once runtime and tests stop using them.
 
 #### Files
 
 - `src/interfaces/ports.rs`
-- `src/infrastructure/document_blueprints/mod.rs`
-- `src/infrastructure/document_assemblers/mod.rs`
 - `README.md`
 
 #### Changes
 
-- Add comments/docstrings clearly marking:
-  - `DocumentBlueprintBuilderPort` as compatibility
-  - `DocumentAssemblerPort` as compatibility
-- Keep them only as long as tests or callers still rely on them.
+- Remove `DocumentBlueprintBuilderPort`.
+- Remove `DocumentAssemblerPort`.
+- Remove the corresponding pipeline builder hooks.
+- Move any remaining tests to `PageComposer` directly.
 
 #### Acceptance criteria
 
-- A new contributor can see which API is canonical.
-- Compatibility layers do not appear as equally preferred architecture.
+- A new contributor sees a single public composition path.
+- The pipeline API no longer suggests multiple owners for page policy.
 
 ### Commit 7: Remove `LayoutEngineFactoryPort` and keep `XyCut` as explicit fallback
 
@@ -343,8 +332,8 @@ Collapse the dead factory layer now that runtime wiring no longer depends on it.
 
 - Remove `LayoutEngineFactoryPort`.
 - Remove `DefaultLayoutEngineFactory`.
-- Keep `LayoutEnginePort` plus `XyCutLayoutEngine` as an explicit opt-in
-  compatibility hook through `with_layout_engine(...)`.
+- Keep `LayoutEnginePort` plus `XyCutLayoutEngine` only for direct use and
+  engine-level tests, not as a pipeline hook.
 
 #### Acceptance criteria
 

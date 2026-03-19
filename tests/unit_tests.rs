@@ -443,7 +443,6 @@ mod exporter_tests {
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
         TableCell, TableCellAlignment, TableCellStyle, TableStructure,
     };
-    use ocrfast::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
     use ocrfast::infrastructure::exporters::{
         JsonExporter, LatexExporter, PdfReconstructedExporter, TxtExporter,
     };
@@ -451,7 +450,8 @@ mod exporter_tests {
     use ocrfast::infrastructure::exporters::{
         LatexCompilerValidator, OCRFAST_RUN_TECTONIC_TESTS_ENV,
     };
-    use ocrfast::interfaces::ports::{DocumentAssemblerPort, ExporterPort};
+    use ocrfast::infrastructure::page_composer::PageComposer;
+    use ocrfast::interfaces::ports::ExporterPort;
     use std::collections::HashMap;
 
     fn png_color_sintetico(ancho: u32, alto: u32, color: [u8; 3]) -> Vec<u8> {
@@ -1723,7 +1723,7 @@ mod exporter_tests {
     }
 
     #[test]
-    fn test_legacy_assembler_aun_puede_reordenar_para_txt() {
+    fn test_page_composer_reordena_para_txt_en_modo_documental() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_txt_order");
         std::fs::create_dir_all(&dir).unwrap();
         let ruta = dir.join("output.txt");
@@ -1777,12 +1777,7 @@ mod exporter_tests {
             },
         ];
 
-        // Cobertura explícita del adaptador legacy: el camino canónico del
-        // producto ya no usa este ensamblador en runtime, pero el adaptador
-        // debe seguir funcionando mientras exista la API histórica.
-        LayoutGuidedDocumentAssembler::new()
-            .assemble(&mut job.document)
-            .unwrap();
+        PageComposer::new().apply_document_order(&mut job.document);
 
         let exporter = TxtExporter::new();
         exporter.export(&job, &ruta).unwrap();
