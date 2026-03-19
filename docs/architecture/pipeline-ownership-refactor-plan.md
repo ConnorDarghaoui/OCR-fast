@@ -277,7 +277,7 @@ integrated orchestrator.
 - Keep external pipeline phases for user-visible progress if needed, but reduce
   internal ownership ambiguity.
 - Make it explicit that:
-  - `LayoutEnginePort` is optional or legacy
+  - standalone layout analysis is no longer part of the runtime path
   - integrated ONNX path is the canonical path
 - Review whether any explicit fallback layout hook still belongs in the default
   runtime path.
@@ -317,7 +317,7 @@ Delete transitional composition hooks once runtime and tests stop using them.
 - A new contributor sees a single public composition path.
 - The pipeline API no longer suggests multiple owners for page policy.
 
-### Commit 7: Remove `LayoutEngineFactoryPort` and keep `XyCut` as explicit fallback
+### Commit 7: Remove `LayoutEngineFactoryPort` and evaluate standalone layout removal
 
 #### Goal
 
@@ -326,19 +326,20 @@ Collapse the dead factory layer now that runtime wiring no longer depends on it.
 #### Files
 
 - `src/interfaces/ports.rs`
-- `src/infrastructure/layout_engines/mod.rs`
+- `src/infrastructure/layout_engines/mod.rs` (remove if no runtime callers remain)
 
 #### Changes
 
 - Remove `LayoutEngineFactoryPort`.
 - Remove `DefaultLayoutEngineFactory`.
-- Keep `LayoutEnginePort` plus `XyCutLayoutEngine` only for direct use and
-  engine-level tests, not as a pipeline hook.
+- If no runtime callers remain, remove `LayoutEnginePort` and the historical
+  `XyCut` implementation instead of preserving dead compatibility.
 
 #### Acceptance criteria
 
 - The factory concept disappears from the public architecture.
-- Fallback layout remains available only when a caller explicitly injects it.
+- Layout ownership remains explicit: either it lives inside the integrated OCR
+  engine, or it does not exist as a separate runtime concern.
 
 ### Commit 8: Remove dead wiring from runtime setup
 

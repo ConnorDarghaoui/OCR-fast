@@ -6,8 +6,6 @@ pub mod document_parsers;
 pub mod exporters;
 /// Persistencia local de snapshots de trabajos.
 pub mod job_store;
-/// Motores de análisis geométrico de layout.
-pub mod layout_engines;
 /// Engines OCR concretos y sus backends.
 pub mod ocr_engines;
 /// Composición única por página para exportadores ricos.

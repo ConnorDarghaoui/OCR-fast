@@ -2,7 +2,7 @@ use crate::domain::errors::{
     DocumentError, ExportError, JobStoreError, LayoutError, ModelDownloadError, OcrError,
     PreprocessError,
 };
-use crate::domain::{Block, Document, Job, Page, ProcessingProfile};
+use crate::domain::{Document, Job, ProcessingProfile};
 use std::path::Path;
 
 /// Contrato para rasterizar páginas PDF sin acoplar el pipeline a Pdfium.
@@ -35,25 +35,6 @@ pub trait PdfRendererPort: Send + Sync {
 
     /// Cuenta páginas sin obligar a renderizar el documento completo.
     fn get_page_count(&self, path: &Path) -> Result<u32, DocumentError>;
-}
-
-/// Contrato para segmentar una página en bloques semánticos ordenados.
-///
-/// El objetivo del puerto es aislar al pipeline de la estrategia concreta de
-/// layout: heurística, neuronal o híbrida. La interfaz exige orden de lectura
-/// estable porque exportadores y OCR posteriores dependen de esa secuencia para
-/// producir resultados reproducibles.
-///
-/// # Trade-offs
-///
-/// El retorno usa `Vec<Block>` en lugar de un iterador streaming porque etapas
-/// posteriores necesitan acceso repetido y mutación de los bloques generados.
-pub trait LayoutEnginePort: Send + Sync {
-    /// Analiza una página y retorna bloques con geometría y semántica inicial.
-    fn analyze(&self, page: &Page) -> Result<Vec<Block>, LayoutError>;
-
-    /// Identificador estable del motor para logs, telemetría y diagnóstico.
-    fn name(&self) -> &str;
 }
 
 /// Contrato para poblar contenido OCR sobre un documento ya estructurado.
