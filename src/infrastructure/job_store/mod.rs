@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use uuid::Uuid;
 
 /// Alias público del puerto de almacenamiento para compatibilidad histórica.
@@ -113,6 +113,7 @@ impl JobStorePort for InMemoryJobStore {
 /// pero reduce complejidad operativa y evita un formato incremental más frágil.
 pub struct FileJobStore {
     ruta_archivo: PathBuf,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl FileJobStore {
@@ -120,13 +121,17 @@ impl FileJobStore {
     pub fn new() -> Result<Self, JobStoreError> {
         let ruta_archivo = Self::ruta_estandar()?;
 
-        Ok(Self { ruta_archivo })
+        Ok(Self {
+            ruta_archivo,
+            write_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     /// Crea un store en una ruta explícita útil para pruebas o embedding.
     pub fn with_path(ruta: impl Into<PathBuf>) -> Self {
         Self {
             ruta_archivo: ruta.into(),
+            write_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -276,6 +281,10 @@ impl Default for FileJobStore {
 
 impl JobStorePort for FileJobStore {
     fn save(&self, job: &Job) -> Result<(), JobStoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| JobStoreError::LockError(e.to_string()))?;
         let mut jobs = self.cargar()?;
         jobs.insert(job.id.clone(), job.clone());
         self.persistir(&jobs)?;
@@ -291,6 +300,10 @@ impl JobStorePort for FileJobStore {
     }
 
     fn update(&self, job: &Job) -> Result<(), JobStoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| JobStoreError::LockError(e.to_string()))?;
         let mut jobs = self.cargar()?;
         if !jobs.contains_key(&job.id) {
             return Err(JobStoreError::NotFound(job.id.clone()));
@@ -308,6 +321,10 @@ impl JobStorePort for FileJobStore {
     }
 
     fn delete(&self, id: &str) -> Result<(), JobStoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| JobStoreError::LockError(e.to_string()))?;
         let mut jobs = self.cargar()?;
         if jobs.remove(id).is_none() {
             return Err(JobStoreError::NotFound(id.to_string()));

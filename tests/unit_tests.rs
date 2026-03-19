@@ -127,6 +127,8 @@ mod infrastructure_tests {
     use ocrfast::infrastructure::job_store::{
         normalizar_jobs_al_arranque, FileJobStore, InMemoryJobStore, JobStore,
     };
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
     fn test_in_memory_job_store() {
@@ -312,6 +314,44 @@ mod infrastructure_tests {
         let mensaje = error.to_string();
 
         assert!(mensaje.contains("parseando jobs.json"));
+    }
+
+    #[test]
+    fn test_file_job_store_serializa_escrituras_concurrentes() {
+        let directorio = tempfile::tempdir().expect("No se pudo crear directorio temporal");
+        let ruta = directorio.path().join("jobs.json");
+        let store = Arc::new(FileJobStore::with_path(&ruta));
+        let total_hilos = 12usize;
+        let barrera = Arc::new(Barrier::new(total_hilos));
+        let mut handles = Vec::with_capacity(total_hilos);
+
+        for indice in 0..total_hilos {
+            let store = Arc::clone(&store);
+            let barrera = Arc::clone(&barrera);
+            handles.push(thread::spawn(move || {
+                let job = job_de_prueba(&format!("concurrente-{indice}"));
+                barrera.wait();
+                store.save(&job)
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .expect("el hilo no debe panic")
+                .expect("la escritura concurrente debe completarse");
+        }
+
+        let jobs = store.list().expect("listado final");
+        assert_eq!(jobs.len(), total_hilos);
+
+        for indice in 0..total_hilos {
+            let id = format!("concurrente-{indice}");
+            assert!(
+                jobs.iter().any(|job| job.id == id),
+                "debe persistirse el job {id}"
+            );
+        }
     }
 
     #[test]
