@@ -1,4 +1,4 @@
-use crate::domain::{Dimensions, Rectangle, TableStructure};
+use crate::domain::{BlockType, Dimensions, Rectangle, TableStructure};
 
 /// Representación intermedia para exportadores de alta fidelidad.
 ///
@@ -39,8 +39,61 @@ pub struct PageBlueprint {
     pub number: u32,
     /// Dimensiones raster originales.
     pub dimensions: Dimensions,
+    /// Estrategia efectiva aplicada a esta página concreta.
+    pub processing_mode: ProcessingMode,
     /// Elementos visuales en orden canónico.
     pub elements: Vec<ElementBlueprint>,
+}
+
+/// Bloque detectado por layout antes de resolver su contenido final.
+///
+/// Este tipo separa la verdad geométrica inicial de la resolución de contenido.
+/// El sistema puede cambiar estrategias OCR o de fallback sin perder el bbox ni
+/// el rol estructural que detectó el motor de layout.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DetectedBlock {
+    /// Tipo de bloque detectado por el motor de layout.
+    pub block_type: BlockType,
+    /// Caja original en coordenadas de página.
+    pub bounding_box: Rectangle,
+    /// Orden inicial de lectura provisto por layout.
+    pub reading_order: u32,
+    /// Confianza del detector de layout, si existe esa señal.
+    pub layout_confidence: Option<f32>,
+}
+
+/// Contenido ya resuelto para un bloque individual.
+///
+/// El enum modela el resultado final del autómata por bloque: texto/tablas cuando
+/// el procesamiento es confiable, imagen explícita cuando el bloque es visual y
+/// raster fallback cuando la extracción no merece reconstrucción.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum BlockContent {
+    /// Texto lineal aceptado para renderización.
+    Text(String),
+    /// Tabla estructurada lista para exportación rica.
+    Table(TableStructure),
+    /// Imagen preservada del raster original.
+    Image(ImageCropRef),
+    /// Fallback conservador al recorte raster del bloque.
+    Raster(ImageCropRef),
+    /// Bloques que no requieren payload explícito, como separadores.
+    Empty,
+}
+
+/// Bloque resuelto por el autómata y listo para composición por página.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedBlock {
+    /// Geometría detectada inicialmente por layout.
+    pub detected: DetectedBlock,
+    /// Rol visual/semántico con el que se renderizará.
+    pub role: ElementRole,
+    /// Payload final aceptado por el autómata.
+    pub content: BlockContent,
+    /// Confianza OCR del contenido textual, si existe.
+    pub ocr_confidence: Option<f32>,
+    /// Indica si el bloque terminó degradado por fallback.
+    pub fallback_used: bool,
 }
 
 /// Elemento exportable derivado de un bloque OCR.

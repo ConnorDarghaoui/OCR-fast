@@ -10,6 +10,8 @@ use std::path::PathBuf;
 
 /// Clave estable para persistir la preferencia de procesamiento en metadata.
 pub const DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE: &str = "processing_mode_preference";
+/// Clave estable para persistir el modo de procesamiento efectivo por página.
+pub const DOCUMENT_METADATA_PAGE_PROCESSING_MODES: &str = "page_processing_modes";
 
 /// Serializacion/deserializacion de `SystemTime` como segundos Unix (u64).
 mod serde_system_time {

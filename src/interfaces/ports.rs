@@ -222,6 +222,20 @@ pub trait DocumentAssemblerPort: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// Contrato único de composición por página para exportación rica.
+///
+/// Este puerto colapsa la responsabilidad histórica de ensamblar y luego
+/// reconstruir un blueprint. La implementación decide el modo efectivo por
+/// página, fija el orden de lectura y proyecta un modelo visual estable.
+pub trait PageComposerPort: Send + Sync {
+    /// Compone el documento a un modelo visual listo para render.
+    fn compose(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError>;
+    /// Reordena el documento in-place con la misma política del compositor.
+    fn apply_order(&self, document: &mut Document) -> Result<(), LayoutError>;
+    /// Identificador estable del compositor para logs y diagnóstico.
+    fn name(&self) -> &str;
+}
+
 /// Contrato para asegurar disponibilidad de artefactos de inferencia.
 ///
 /// Modelos ONNX son un problema operativo aparte: implican red, integridad,
