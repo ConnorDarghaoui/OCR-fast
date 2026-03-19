@@ -1,6 +1,6 @@
 [package]
 name = "ocrfast"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Lucas luisboniche@ya.ru"]
 description = "Sistema OCR (Reconocimiento Óptico de Caracteres) local-first implementado en Rust"
