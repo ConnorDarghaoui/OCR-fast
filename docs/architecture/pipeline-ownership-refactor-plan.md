@@ -328,39 +328,28 @@ Make it explicit which ports are still first-class and which are transitional.
 - A new contributor can see which API is canonical.
 - Compatibility layers do not appear as equally preferred architecture.
 
-### Commit 7: Audit whether `LayoutEngineFactoryPort` is still needed
+### Commit 7: Remove `LayoutEngineFactoryPort` and keep `XyCut` as explicit fallback
 
 #### Goal
 
-Decide whether fallback layout remains a product requirement or just historical
-complexity.
+Collapse the dead factory layer now that runtime wiring no longer depends on it.
 
 #### Files
 
 - `src/interfaces/ports.rs`
 - `src/infrastructure/layout_engines/mod.rs`
-- `src/application/tui/app_state.rs`
-- `src/application/tui/job_runtime.rs`
-- `tests/real_document_tests.rs`
 
 #### Changes
 
-- Determine whether `XyCut` still covers a required scenario.
-- If yes:
-  - mark it as explicit fallback/legacy path
-- If no:
-  - remove it from default runtime wiring
-  - keep only if tests still require transitional support
+- Remove `LayoutEngineFactoryPort`.
+- Remove `DefaultLayoutEngineFactory`.
+- Keep `LayoutEnginePort` plus `XyCutLayoutEngine` as an explicit opt-in
+  compatibility hook through `with_layout_engine(...)`.
 
 #### Acceptance criteria
 
-- The system has a clear stance on fallback layout.
-- Runtime wiring reflects that stance.
-
-#### Decision gate
-
-Do not remove this path casually. If tests or user workflows still depend on
-it, freeze it as legacy rather than deleting it prematurely.
+- The factory concept disappears from the public architecture.
+- Fallback layout remains available only when a caller explicitly injects it.
 
 ### Commit 8: Remove dead wiring from runtime setup
 

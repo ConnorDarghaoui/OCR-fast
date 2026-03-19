@@ -4,7 +4,6 @@ use crate::domain::errors::{
 };
 use crate::domain::{Block, Document, DocumentBlueprint, Job, Page, ProcessingProfile};
 use std::path::Path;
-use std::sync::Arc;
 
 /// Contrato para rasterizar páginas PDF sin acoplar el pipeline a Pdfium.
 ///
@@ -133,19 +132,6 @@ pub trait ExporterPort: Send + Sync {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError>;
     /// Nombre estable del formato para UI, logs y resolución de exportador.
     fn format_name(&self) -> &str;
-}
-
-/// Contrato legacy para resolver un motor de layout auxiliar según el OCR activo.
-///
-/// La ruta canónica del producto usa motores OCR que ya integran layout
-/// semántico, por lo que este puerto quedó como fallback explícito para engines
-/// que no proveen esa capacidad.
-///
-/// No debe formar parte del wiring principal de la aplicación salvo que el OCR
-/// activo no provea layout y se haya decidido aceptar esa degradación.
-pub trait LayoutEngineFactoryPort: Send + Sync {
-    /// Retorna un motor de layout auxiliar cuando el OCR activo no lo incorpora.
-    fn create_for(&self, ocr_engine: &dyn OcrEnginePort) -> Option<Arc<dyn LayoutEnginePort>>;
 }
 
 /// Contrato para exportar un `Job` usando su formato configurado.
