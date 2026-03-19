@@ -7,7 +7,6 @@ use ocrfast::domain::errors::{LayoutError, OcrError};
 use ocrfast::domain::{
     Block, BlockType, Dimensions, Document, DocumentBlueprint, Page, ProcessingProfile, Rectangle,
 };
-use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
 use ocrfast::interfaces::ports::{
     DocumentAssemblerPort, DocumentParserPort, OcrEnginePort, PostprocessorPort,
@@ -551,7 +550,6 @@ fn test_pipeline_invoca_refinement_pass_despues_del_blueprint() {
     let refinamiento_ref = Arc::clone(&refinamiento);
 
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(refinamiento)
         .with_refinement_budget(RefinementBudget::new(2));
 
@@ -593,7 +591,6 @@ fn test_pipeline_refinement_budget_limita_passes() {
     let segundo_ref = Arc::clone(&segundo_pass);
 
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(primer_pass)
         .with_refinement_pass(segundo_pass)
         .with_refinement_budget(RefinementBudget::new(1));
@@ -650,7 +647,6 @@ fn test_pipeline_admite_noop_refinement_pass() {
     let parser = Arc::new(StubDocumentParser::new());
     let ocr = Arc::new(StubOcrEngine);
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(Arc::new(NoopRefinementPass::default()))
         .with_refinement_budget(RefinementBudget::new(1));
 
@@ -664,6 +660,33 @@ fn test_pipeline_admite_noop_refinement_pass() {
         .expect("El NoopRefinementPass no debe romper la corrida");
 
     assert!(resultado.blueprint.is_some());
+}
+
+#[test]
+fn test_pipeline_con_blueprint_usa_page_composer_sin_builder_legacy() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let pipeline = OcrPipeline::new(parser, ocr);
+
+    let resultado = pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_blueprint_page_composer.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("El pipeline debe producir blueprint usando PageComposer");
+
+    let blueprint = resultado
+        .blueprint
+        .expect("La ruta canónica debe producir blueprint aun sin builder legacy");
+
+    assert_eq!(blueprint.document_id, resultado.document.id);
+    assert_eq!(blueprint.pages.len(), resultado.document.pages.len());
+    assert_eq!(
+        blueprint.pages[0].elements.len(),
+        resultado.document.pages[0].blocks.len()
+    );
 }
 
 #[test]
@@ -770,7 +793,6 @@ fn test_pipeline_cancelacion_se_observa_entre_refinamientos() {
     let segundo_ref = Arc::clone(&segundo_pass);
 
     let pipeline = OcrPipeline::new(parser, ocr)
-        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
         .with_refinement_pass(Arc::new(PassCancela {
             cancelacion: Arc::clone(&cancelacion),
         }))

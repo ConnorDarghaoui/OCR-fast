@@ -2,6 +2,7 @@
 pub mod refinement;
 
 use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
+use crate::infrastructure::page_composer::PageComposer;
 use crate::interfaces::ports::{
     DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort,
     OcrEnginePort, PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
@@ -185,6 +186,11 @@ impl OcrPipeline {
     }
 
     /// Añade una fase opcional de reconstrucción visual para exportadores ricos.
+    ///
+    /// Este builder se mantiene como override legacy. La ruta canónica para
+    /// `procesar_documento_con_blueprint()` ya es `PageComposer`; por eso este
+    /// puerto solo debería existir mientras haya callers históricos o pruebas
+    /// que necesiten validar la compatibilidad.
     pub fn with_blueprint_builder(
         mut self,
         blueprint_builder: Arc<dyn DocumentBlueprintBuilderPort>,
@@ -244,7 +250,7 @@ impl OcrPipeline {
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Document, PipelineFailure> {
-        self.procesar_documento_con_blueprint(ruta, perfil, notificador, cancelacion)
+        self.procesar_documento_interno(ruta, perfil, notificador, cancelacion, false)
             .map(|resultado| resultado.document)
     }
 
@@ -260,6 +266,17 @@ impl OcrPipeline {
         perfil: &ProcessingProfile,
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<PipelineResult, PipelineFailure> {
+        self.procesar_documento_interno(ruta, perfil, notificador, cancelacion, true)
+    }
+
+    fn procesar_documento_interno(
+        &self,
+        ruta: &Path,
+        perfil: &ProcessingProfile,
+        notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
+        cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
+        construir_blueprint: bool,
     ) -> Result<PipelineResult, PipelineFailure> {
         let mut refinement_consumidos = 0usize;
         self.notificar(
@@ -423,7 +440,7 @@ impl OcrPipeline {
 
         self.verificar_cancelacion(cancelacion)?;
 
-        let mut blueprint = if let Some(ref blueprint_builder) = self.blueprint_builder {
+        let mut blueprint = if construir_blueprint {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
@@ -431,14 +448,7 @@ impl OcrPipeline {
                     progreso: 0.97,
                 },
             );
-            let blueprint = blueprint_builder
-                .build_blueprint(&documento)
-                .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
-            log::info!(
-                "Pipeline: blueprint visual completado ({})",
-                blueprint_builder.name()
-            );
-            Some(blueprint)
+            Some(self.construir_blueprint_canonico(&documento)?)
         } else {
             None
         };
@@ -466,6 +476,28 @@ impl OcrPipeline {
             document: documento,
             blueprint,
         })
+    }
+
+    fn construir_blueprint_canonico(
+        &self,
+        documento: &Document,
+    ) -> Result<DocumentBlueprint, PipelineFailure> {
+        if let Some(ref blueprint_builder) = self.blueprint_builder {
+            let blueprint = blueprint_builder
+                .build_blueprint(documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
+            log::info!(
+                "Pipeline: blueprint visual completado ({}) [compat]",
+                blueprint_builder.name()
+            );
+            Ok(blueprint)
+        } else {
+            let blueprint = PageComposer::new()
+                .compose(documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
+            log::info!("Pipeline: blueprint visual completado (PageComposer)");
+            Ok(blueprint)
+        }
     }
 
     fn verificar_cancelacion(

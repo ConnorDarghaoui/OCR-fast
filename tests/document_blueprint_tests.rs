@@ -232,8 +232,7 @@ fn test_pipeline_retorna_blueprint_sin_romper_documento_clasico() {
     let pipeline = OcrPipeline::new(
         Arc::new(StubDocumentParser::new()),
         Arc::new(StubOcrEngine::new()),
-    )
-    .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()));
+    );
 
     let resultado = pipeline
         .procesar_documento_con_blueprint(
