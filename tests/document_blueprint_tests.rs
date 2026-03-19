@@ -1,7 +1,7 @@
 use ocrfast::application::pipeline::OcrPipeline;
 use ocrfast::domain::{
     Block, BlockType, Dimensions, Document, ElementRole, Page, ProcessingMode, ProcessingProfile,
-    Rectangle,
+    Rectangle, DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
 use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
@@ -296,4 +296,44 @@ fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
             .any(|elemento| elemento.suspected_header || elemento.suspected_footer),
         "Las capturas de interfaz no deben pasar por hints documentales de header/footer"
     );
+}
+
+#[test]
+fn test_blueprint_honra_override_manual_documental_desde_metadata() {
+    let mut documento = documento_captura_marketplace();
+    documento.metadata.insert(
+        DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
+        "document".to_string(),
+    );
+
+    let blueprint = HighFidelityBlueprintBuilder::new()
+        .build_blueprint(&documento)
+        .expect("El builder debe honrar la preferencia manual");
+
+    assert_eq!(
+        blueprint.processing_mode,
+        ProcessingMode::DocumentReconstruction
+    );
+}
+
+#[test]
+fn test_blueprint_honra_override_manual_visual_desde_metadata() {
+    let mut documento = documento_dos_columnas();
+    documento.metadata.insert(
+        DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
+        "visual".to_string(),
+    );
+
+    let blueprint = HighFidelityBlueprintBuilder::new()
+        .build_blueprint(&documento)
+        .expect("El builder debe honrar la preservacion visual forzada");
+
+    assert_eq!(
+        blueprint.processing_mode,
+        ProcessingMode::VisualPreservation
+    );
+    assert!(blueprint.pages[0]
+        .elements
+        .iter()
+        .all(|elemento| elemento.total_columns == 1));
 }

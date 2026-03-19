@@ -1,7 +1,10 @@
 use crate::application::pipeline::{PipelineEvent, PipelineFailure};
 use crate::application::tui::engine_bootstrap::EngineBootstrapState;
 use crate::application::tui::job_runtime::JobRuntimeState;
-use crate::domain::{Job, JobStatus, LanguageConfig, OutputFormat, ProcessingProfile};
+use crate::domain::{
+    Job, JobStatus, LanguageConfig, OutputFormat, ProcessingModePreference, ProcessingProfile,
+    DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
+};
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
 use crate::interfaces::ports::{
     DocumentParserPort, JobExporterPort, JobStorePort, LayoutEngineFactoryPort, OcrEnginePort,
@@ -82,10 +85,16 @@ pub struct AppState {
     pub registros: VecDeque<String>,
     /// True cuando se espera que el usuario elija el formato de salida.
     pub seleccionando_formato: bool,
+    /// True cuando se espera que el usuario elija la estrategia de procesamiento.
+    pub seleccionando_modo_procesamiento: bool,
     /// Ruta pendiente mientras se selecciona el formato.
     pub ruta_pendiente: Option<String>,
+    /// Formato retenido mientras se selecciona la estrategia de procesamiento.
+    pub formato_pendiente: Option<OutputFormat>,
     /// Indice del formato seleccionado en la lista de opciones.
     pub indice_formato: usize,
+    /// Indice de la estrategia de procesamiento seleccionada.
+    pub indice_modo_procesamiento: usize,
 }
 
 impl AppState {
@@ -128,8 +137,11 @@ impl AppState {
             mensaje_estado: None,
             registros: VecDeque::from(["Sistema inicializado...".to_string()]),
             seleccionando_formato: false,
+            seleccionando_modo_procesamiento: false,
             ruta_pendiente: None,
+            formato_pendiente: None,
             indice_formato: 0,
+            indice_modo_procesamiento: 0,
         };
 
         for mensaje in log_arranque {
@@ -236,11 +248,30 @@ impl AppState {
     /// Falla si la UI perdió la ruta pendiente o si la creación del job no puede
     /// completarse por validaciones posteriores.
     pub fn confirmar_formato(&mut self) -> Result<(), String> {
-        let ruta = self.ruta_pendiente.take().ok_or("Sin ruta pendiente")?;
         let formato = OutputFormat::OPCIONES[self.indice_formato];
         self.seleccionando_formato = false;
         self.indice_formato = 0;
-        self.crear_trabajo(ruta, formato)
+        self.formato_pendiente = Some(formato);
+        self.seleccionando_modo_procesamiento = true;
+        Ok(())
+    }
+
+    /// Confirma la estrategia de procesamiento elegida y crea el trabajo.
+    ///
+    /// # Errors
+    ///
+    /// Falla si la UI perdió la ruta o el formato retenidos antes de crear el
+    /// trabajo, o si la validación posterior rechaza la cola solicitada.
+    pub fn confirmar_modo_procesamiento(&mut self) -> Result<(), String> {
+        let ruta = self.ruta_pendiente.take().ok_or("Sin ruta pendiente")?;
+        let formato = self
+            .formato_pendiente
+            .take()
+            .ok_or("Sin formato pendiente")?;
+        let modo = ProcessingModePreference::OPCIONES[self.indice_modo_procesamiento];
+        self.seleccionando_modo_procesamiento = false;
+        self.indice_modo_procesamiento = 0;
+        self.crear_trabajo(ruta, formato, modo)
     }
 
     /// Crea, persiste y encola un trabajo nuevo a partir de una ruta validada.
@@ -254,7 +285,12 @@ impl AppState {
     ///
     /// Retorna `Err` si el motor aún no está disponible, si la ruta ya está
     /// encolada o si el parser no puede construir el `Document` inicial.
-    fn crear_trabajo(&mut self, ruta: String, formato: OutputFormat) -> Result<(), String> {
+    fn crear_trabajo(
+        &mut self,
+        ruta: String,
+        formato: OutputFormat,
+        modo: ProcessingModePreference,
+    ) -> Result<(), String> {
         if !self.estado_motor.motor_cargado() {
             return Err(
                 "Motor OCR aun inicializando. Espere a que finalice la carga y vuelva a intentarlo."
@@ -278,10 +314,14 @@ impl AppState {
             return Err(format!("El archivo ya esta en cola: {}", ruta));
         }
 
-        let documento = self
+        let mut documento = self
             .analizador_documentos
             .parse(std::path::Path::new(&ruta))
             .map_err(|e| format!("Error al parsear: {}", e))?;
+        documento.metadata.insert(
+            DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
+            modo.metadata_value().to_string(),
+        );
 
         let id_trabajo = uuid::Uuid::new_v4().to_string();
         let trabajo = Job {
@@ -293,6 +333,7 @@ impl AppState {
             profile: self.perfil,
             error_message: None,
             formato_salida: formato,
+            modo_procesamiento: modo,
         };
 
         if let Err(e) = self.job_store.save(&trabajo) {
@@ -303,9 +344,10 @@ impl AppState {
         self.indice_seleccionado = self.trabajos.len() - 1;
 
         let mensaje_log = format!(
-            "Nuevo trabajo creado: {} ({})",
+            "Nuevo trabajo creado: {} ({} / {})",
             &id_trabajo[..8],
-            formato.nombre()
+            formato.nombre(),
+            modo.nombre()
         );
         self.loguear(mensaje_log);
         self.iniciar_procesamiento_fondo(id_trabajo);
@@ -636,6 +678,16 @@ impl AppState {
                 None
             }
         })
+    }
+
+    /// Limpia el estado temporal de selección de salida pendiente.
+    pub fn cancelar_seleccion_salida(&mut self) {
+        self.seleccionando_formato = false;
+        self.seleccionando_modo_procesamiento = false;
+        self.ruta_pendiente = None;
+        self.formato_pendiente = None;
+        self.indice_formato = 0;
+        self.indice_modo_procesamiento = 0;
     }
 
     /// Elimina de memoria y de storage los trabajos ya terminales.

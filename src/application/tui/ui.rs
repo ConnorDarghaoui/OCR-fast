@@ -1,5 +1,5 @@
 use super::app_state::{AppState, InputMode, ViewMode};
-use crate::domain::{JobStatus, OutputFormat, ProcessingProfile};
+use crate::domain::{JobStatus, OutputFormat, ProcessingModePreference, ProcessingProfile};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -99,6 +99,10 @@ pub fn renderizar_interfaz(marco: &mut Frame, aplicacion: &AppState) {
 
     if aplicacion.seleccionando_formato {
         renderizar_popup_formato(marco, aplicacion);
+    }
+
+    if aplicacion.seleccionando_modo_procesamiento {
+        renderizar_popup_modo_procesamiento(marco, aplicacion);
     }
 }
 
@@ -690,6 +694,52 @@ fn renderizar_popup_formato(marco: &mut Frame, aplicacion: &AppState) {
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Thick)
             .title(" Formato de salida ")
+            .title_bottom(Line::from(Span::styled(
+                " ↑↓ navegar  Enter confirmar  Esc cancelar ",
+                Style::default().fg(Color::DarkGray),
+            ))),
+    );
+
+    marco.render_widget(Clear, area);
+    marco.render_widget(lista, area);
+}
+
+/// Popup de seleccion de estrategia de procesamiento.
+fn renderizar_popup_modo_procesamiento(marco: &mut Frame, aplicacion: &AppState) {
+    let area = rectangulo_centrado(56, 46, marco.area());
+
+    let items: Vec<ListItem> = ProcessingModePreference::OPCIONES
+        .iter()
+        .enumerate()
+        .map(|(i, modo)| {
+            let prefijo = if i == aplicacion.indice_modo_procesamiento {
+                " ▶ "
+            } else {
+                "   "
+            };
+            let titulo = format!("{}{}", prefijo, modo.nombre());
+            let estilo_titulo = if i == aplicacion.indice_modo_procesamiento {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            ListItem::new(vec![
+                Line::from(Span::styled(titulo, estilo_titulo)),
+                Line::from(Span::styled(
+                    format!("     {}", modo.descripcion()),
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ])
+        })
+        .collect();
+
+    let lista = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Thick)
+            .title(" Estrategia de procesamiento ")
             .title_bottom(Line::from(Span::styled(
                 " ↑↓ navegar  Enter confirmar  Esc cancelar ",
                 Style::default().fg(Color::DarkGray),

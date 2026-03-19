@@ -78,6 +78,7 @@ mod domain_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         };
 
         assert_eq!(job.id, "job-test-id");
@@ -104,6 +105,7 @@ mod domain_tests {
             profile: ProcessingProfile::Fast,
             error_message: Some("Error de prueba".to_string()),
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         };
 
         assert_eq!(job.status, JobStatus::Failed);
@@ -168,6 +170,7 @@ mod infrastructure_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         };
 
         assert!(store.save(&job).is_ok());
@@ -197,6 +200,7 @@ mod infrastructure_tests {
             profile: ProcessingProfile::Accurate,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         };
 
         store.save(&job).unwrap();
@@ -225,6 +229,7 @@ mod infrastructure_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         }
     }
 
@@ -624,6 +629,7 @@ mod exporter_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         }
     }
 
@@ -867,6 +873,7 @@ mod exporter_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         }
     }
 
@@ -985,6 +992,7 @@ mod exporter_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         }
     }
 
@@ -1025,6 +1033,7 @@ mod exporter_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         }
     }
 
@@ -1098,6 +1107,7 @@ mod exporter_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         }
     }
 
@@ -1206,6 +1216,7 @@ mod exporter_tests {
             profile: ProcessingProfile::Balanced,
             error_message: None,
             formato_salida: Default::default(),
+            modo_procesamiento: Default::default(),
         }
     }
 
