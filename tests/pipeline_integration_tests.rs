@@ -1,7 +1,8 @@
 use ocrfast::application::pipeline::{
-    ConfidenceBoostPass, NoopRefinementPass, OcrPipeline, PipelineEvent, PipelineFailure,
-    RefinementBudget, RefinementContext, RefinementPass, RefinementStage,
+    NoopRefinementPass, OcrPipeline, PipelineEvent, PipelineFailure, RefinementBudget,
+    RefinementContext, RefinementPass, RefinementStage,
 };
+use ocrfast::application::pipeline::recovery::ConfidenceBoostPass;
 use ocrfast::domain::errors::DocumentError;
 use ocrfast::domain::errors::{LayoutError, OcrError};
 use ocrfast::domain::{

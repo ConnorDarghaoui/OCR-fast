@@ -1,6 +1,6 @@
-use crate::domain::{Block, BlockType, Document, DocumentBlueprint, ProcessingProfile, Rectangle};
+use crate::domain::{Document, DocumentBlueprint, ProcessingProfile};
 use crate::infrastructure::preprocessors::ImagePreprocessor;
-use crate::interfaces::ports::{OcrEnginePort, PreprocessorPort};
+use crate::interfaces::ports::PreprocessorPort;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -116,6 +116,12 @@ pub trait RefinementPass: Send + Sync {
         context: &RefinementContext<'_>,
     ) -> Result<(), RefinementError>;
 }
+
+/// `refinement.rs` queda reservado para limpieza y transformaciones de página.
+///
+/// Los mecanismos caros de recuperación OCR no viven aquí más. Para ese caso se
+/// debe usar `application::pipeline::recovery`, que deja explícito que se trata
+/// de una ruta opt-in y no del camino principal del producto.
 
 /// Pass inerte para validar cableado y presupuesto sin alterar la salida.
 ///
@@ -254,201 +260,6 @@ impl RefinementPass for DeskewPass {
     ) -> Result<(), RefinementError> {
         self.preprocessor.preprocess(document)?;
         Ok(())
-    }
-}
-
-/// Pass de reintento OCR para bloques débiles antes de construir el blueprint.
-///
-/// El pass no reescribe la geometría del documento original. Reprocesa una copia
-/// completa con un perfil más preciso y fusiona solo bloques cuya confianza OCR
-/// mejora de forma material, preservando el layout aceptado por el pipeline.
-///
-/// # Trade-offs
-///
-/// La estrategia actual reejecuta OCR sobre el documento completo porque el
-/// puerto disponible no expone OCR selectivo por bloque. Eso aumenta latencia
-/// frente a una solución quirúrgica, pero permite introducir mejora selectiva
-/// sin romper contratos ya consumidos por TUI y exportadores.
-pub struct ConfidenceBoostPass {
-    ocr_engine: Arc<dyn OcrEnginePort>,
-    threshold: f64,
-    min_gain: f64,
-    retry_profile: ProcessingProfile,
-}
-
-impl ConfidenceBoostPass {
-    /// Construye el pass con un reintento OCR conservador y perfil preciso.
-    pub fn new(ocr_engine: Arc<dyn OcrEnginePort>) -> Self {
-        Self::with_config(ocr_engine, 0.78, 0.05, ProcessingProfile::Accurate)
-    }
-
-    /// Construye el pass con umbrales explícitos para tuning o pruebas.
-    pub fn with_config(
-        ocr_engine: Arc<dyn OcrEnginePort>,
-        threshold: f64,
-        min_gain: f64,
-        retry_profile: ProcessingProfile,
-    ) -> Self {
-        Self {
-            ocr_engine,
-            threshold,
-            min_gain,
-            retry_profile,
-        }
-    }
-
-    fn has_low_confidence_blocks(&self, document: &Document) -> bool {
-        document.pages.iter().any(|page| {
-            page.blocks
-                .iter()
-                .any(|block| is_confidence_eligible(block) && block.confidence < self.threshold)
-        })
-    }
-
-    fn merge_retry_results(&self, original: &mut Document, retried: &Document) {
-        for (original_page, retried_page) in original.pages.iter_mut().zip(&retried.pages) {
-            let mut candidate_used = vec![false; retried_page.blocks.len()];
-
-            for original_block in &mut original_page.blocks {
-                if !is_confidence_eligible(original_block)
-                    || original_block.confidence >= self.threshold
-                {
-                    continue;
-                }
-
-                let Some((candidate_index, candidate_block)) =
-                    best_retry_candidate(original_block, &retried_page.blocks, &candidate_used)
-                else {
-                    continue;
-                };
-
-                if candidate_block.confidence < original_block.confidence + self.min_gain
-                    || candidate_block.content.trim().is_empty()
-                {
-                    continue;
-                }
-
-                original_block.content = candidate_block.content.clone();
-                original_block.confidence = candidate_block.confidence;
-                original_block.table_structure = candidate_block.table_structure.clone();
-                original_block.embedded_image = candidate_block.embedded_image.clone();
-                if original_block.layout_confidence.is_none() {
-                    original_block.layout_confidence = candidate_block.layout_confidence;
-                }
-                candidate_used[candidate_index] = true;
-            }
-        }
-    }
-}
-
-impl RefinementPass for ConfidenceBoostPass {
-    fn stage(&self) -> RefinementStage {
-        RefinementStage::AfterOcr
-    }
-
-    fn name(&self) -> &str {
-        "ConfidenceBoostPass"
-    }
-
-    fn refine(
-        &self,
-        document: &mut Document,
-        _blueprint: &mut Option<DocumentBlueprint>,
-        _context: &RefinementContext<'_>,
-    ) -> Result<(), RefinementError> {
-        if !self.has_low_confidence_blocks(document) {
-            return Ok(());
-        }
-
-        let mut retried = self.build_retry_document(document);
-        self.ocr_engine.process(&mut retried, &self.retry_profile)?;
-        self.merge_retry_results(document, &retried);
-        Ok(())
-    }
-}
-
-impl ConfidenceBoostPass {
-    fn build_retry_document(&self, document: &Document) -> Document {
-        let pages = document
-            .pages
-            .iter()
-            .filter(|page| {
-                page.blocks
-                    .iter()
-                    .any(|block| is_confidence_eligible(block) && block.confidence < self.threshold)
-            })
-            .cloned()
-            .collect();
-
-        Document {
-            id: document.id.clone(),
-            source_path: document.source_path.clone(),
-            pages,
-            metadata: document.metadata.clone(),
-        }
-    }
-}
-
-fn is_confidence_eligible(block: &Block) -> bool {
-    matches!(
-        block.block_type,
-        BlockType::Text | BlockType::Title | BlockType::List | BlockType::Table
-    )
-}
-
-fn best_retry_candidate<'a>(
-    original: &Block,
-    candidates: &'a [Block],
-    used: &[bool],
-) -> Option<(usize, &'a Block)> {
-    candidates
-        .iter()
-        .enumerate()
-        .filter(|(index, candidate)| {
-            !used[*index]
-                && candidate.block_type == original.block_type
-                && block_similarity_score(original, candidate) >= 0.55
-        })
-        .max_by(|(_, left), (_, right)| {
-            block_similarity_score(original, left)
-                .partial_cmp(&block_similarity_score(original, right))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-}
-
-fn block_similarity_score(left: &Block, right: &Block) -> f64 {
-    let mut score = rectangle_iou(&left.bounding_box, &right.bounding_box);
-    if left.reading_order == right.reading_order {
-        score += 0.35;
-    }
-    score
-}
-
-fn rectangle_iou(left: &Rectangle, right: &Rectangle) -> f64 {
-    let left_x2 = left.x.saturating_add(left.width);
-    let left_y2 = left.y.saturating_add(left.height);
-    let right_x2 = right.x.saturating_add(right.width);
-    let right_y2 = right.y.saturating_add(right.height);
-
-    let intersection_x1 = left.x.max(right.x);
-    let intersection_y1 = left.y.max(right.y);
-    let intersection_x2 = left_x2.min(right_x2);
-    let intersection_y2 = left_y2.min(right_y2);
-
-    if intersection_x2 <= intersection_x1 || intersection_y2 <= intersection_y1 {
-        return 0.0;
-    }
-
-    let intersection_area =
-        (intersection_x2 - intersection_x1) as f64 * (intersection_y2 - intersection_y1) as f64;
-    let left_area = left.width as f64 * left.height as f64;
-    let right_area = right.width as f64 * right.height as f64;
-    let union_area = left_area + right_area - intersection_area;
-
-    if union_area <= f64::EPSILON {
-        0.0
-    } else {
-        intersection_area / union_area
     }
 }
 

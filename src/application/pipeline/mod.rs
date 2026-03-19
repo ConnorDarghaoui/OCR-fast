@@ -1,5 +1,7 @@
 /// Cadena opcional de refinamientos encadenables por etapa del pipeline.
 pub mod refinement;
+/// Recuperaciones OCR costosas y opt-in fuera del camino principal.
+pub mod recovery;
 
 use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
 use crate::infrastructure::page_composer::PageComposer;
@@ -8,8 +10,8 @@ use crate::interfaces::ports::{
     OcrEnginePort, PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
 };
 pub use refinement::{
-    ConfidenceBoostPass, DenoisePass, DeskewPass, NoopRefinementPass, RefinementBudget,
-    RefinementContext, RefinementPass, RefinementStage,
+    DenoisePass, DeskewPass, NoopRefinementPass, RefinementBudget, RefinementContext,
+    RefinementPass, RefinementStage,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
