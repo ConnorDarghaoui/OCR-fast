@@ -8,6 +8,9 @@ pub use document_blueprint::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Clave estable para persistir la preferencia de procesamiento en metadata.
+pub const DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE: &str = "processing_mode_preference";
+
 /// Serializacion/deserializacion de `SystemTime` como segundos Unix (u64).
 mod serde_system_time {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -435,6 +438,63 @@ impl OutputFormat {
     ];
 }
 
+/// Preferencia de estrategia elegida por el usuario para un trabajo OCR.
+///
+/// Esta preferencia vive en dominio porque afecta tanto la decisión de pipeline
+/// como la persistencia y la UI. `Auto` preserva la heurística existente; las
+/// variantes explícitas se usan para entradas híbridas o ambiguas donde el
+/// usuario conoce mejor la intención final que el clasificador local.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+pub enum ProcessingModePreference {
+    /// Permite que el sistema infiera la estrategia adecuada.
+    #[default]
+    Auto,
+    /// Fuerza la reconstrucción documental tradicional.
+    DocumentReconstruction,
+    /// Fuerza preservación visual facsimilar.
+    VisualPreservation,
+}
+
+impl ProcessingModePreference {
+    /// Retorna el nombre estable mostrado en UI y logs operativos.
+    pub fn nombre(&self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::DocumentReconstruction => "Reconstruccion documental",
+            Self::VisualPreservation => "Preservacion visual",
+        }
+    }
+
+    /// Retorna una explicación corta de la política elegida.
+    pub fn descripcion(&self) -> &'static str {
+        match self {
+            Self::Auto => "Detecta el tipo de entrada y decide la estrategia.",
+            Self::DocumentReconstruction => {
+                "Reordena y recompone el contenido como documento editable."
+            }
+            Self::VisualPreservation => {
+                "Preserva la pagina visualmente y superpone OCR para busqueda."
+            }
+        }
+    }
+
+    /// Retorna el valor serializado usado en metadata del documento.
+    pub fn metadata_value(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::DocumentReconstruction => "document",
+            Self::VisualPreservation => "visual",
+        }
+    }
+
+    /// Lista ordenada de preferencias ofrecidas por la interfaz actual.
+    pub const OPCIONES: &'static [ProcessingModePreference] = &[
+        ProcessingModePreference::Auto,
+        ProcessingModePreference::DocumentReconstruction,
+        ProcessingModePreference::VisualPreservation,
+    ];
+}
+
 /// Máquina de estados observable de un trabajo OCR.
 ///
 /// El enum separa explícitamente `Failed` de `Cancelled` porque ambas rutas tienen
@@ -491,6 +551,9 @@ pub struct Job {
     /// Formato de salida solicitado por el usuario.
     #[serde(default)]
     pub formato_salida: OutputFormat,
+    /// Estrategia de procesamiento pedida por el usuario para este trabajo.
+    #[serde(default)]
+    pub modo_procesamiento: ProcessingModePreference,
 }
 
 /// Política de calidad/latencia aplicada al pipeline OCR.

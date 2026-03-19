@@ -1,6 +1,6 @@
 use super::app_state::{AppState, InputMode, ViewMode};
 use super::ui;
-use crate::domain::OutputFormat;
+use crate::domain::{OutputFormat, ProcessingModePreference};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{backend::Backend, Terminal};
 use std::io;
@@ -55,6 +55,10 @@ fn manejar_evento_tecla(tecla: KeyEvent, aplicacion: &mut AppState) -> Result<()
         return manejar_seleccion_formato(tecla, aplicacion);
     }
 
+    if aplicacion.seleccionando_modo_procesamiento {
+        return manejar_seleccion_modo_procesamiento(tecla, aplicacion);
+    }
+
     match aplicacion.modo_entrada {
         InputMode::Normal => manejar_modo_normal(tecla, aplicacion),
         InputMode::Editing => manejar_modo_edicion(tecla, aplicacion),
@@ -77,12 +81,38 @@ fn manejar_seleccion_formato(tecla: KeyEvent, app: &mut AppState) -> Result<(), 
             }
         }
         KeyCode::Esc => {
-            app.seleccionando_formato = false;
-            app.ruta_pendiente = None;
-            app.indice_formato = 0;
+            app.cancelar_seleccion_salida();
         }
         _ => {}
     }
+    Ok(())
+}
+
+/// Opera el popup modal de estrategia de procesamiento.
+fn manejar_seleccion_modo_procesamiento(
+    tecla: KeyEvent,
+    app: &mut AppState,
+) -> Result<(), io::Error> {
+    match tecla.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.indice_modo_procesamiento =
+                (app.indice_modo_procesamiento + 1) % ProcessingModePreference::OPCIONES.len();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let n = ProcessingModePreference::OPCIONES.len();
+            app.indice_modo_procesamiento = (app.indice_modo_procesamiento + n - 1) % n;
+        }
+        KeyCode::Enter => {
+            if let Err(e) = app.confirmar_modo_procesamiento() {
+                app.mostrar_estado(format!("Error: {}", e));
+            }
+        }
+        KeyCode::Esc => {
+            app.cancelar_seleccion_salida();
+        }
+        _ => {}
+    }
+
     Ok(())
 }
 

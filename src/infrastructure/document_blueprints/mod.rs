@@ -2,6 +2,7 @@ use crate::domain::errors::LayoutError;
 use crate::domain::{
     AlignmentHint, Block, BlockType, Document, DocumentBlueprint, ElementBlueprint, ElementRole,
     EmphasisHint, ImageCropRef, Page, PageBlueprint, ProcessingMode, StyleHints,
+    DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
 use crate::interfaces::ports::DocumentBlueprintBuilderPort;
 
@@ -335,6 +336,10 @@ fn inferir_estilo(
 }
 
 fn inferir_processing_mode(document: &Document) -> ProcessingMode {
+    if let Some(forzado) = processing_mode_forzado(document) {
+        return forzado;
+    }
+
     if document.pages.is_empty() {
         return ProcessingMode::DocumentReconstruction;
     }
@@ -360,6 +365,19 @@ fn inferir_processing_mode(document: &Document) -> ProcessingMode {
         ProcessingMode::VisualPreservation
     } else {
         ProcessingMode::DocumentReconstruction
+    }
+}
+
+fn processing_mode_forzado(document: &Document) -> Option<ProcessingMode> {
+    let valor = document
+        .metadata
+        .get(DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE)?;
+
+    match valor.as_str() {
+        "document" => Some(ProcessingMode::DocumentReconstruction),
+        "visual" => Some(ProcessingMode::VisualPreservation),
+        "auto" => None,
+        _ => None,
     }
 }
 
