@@ -12,8 +12,8 @@ use ocrfast::domain::{
 };
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
 use ocrfast::interfaces::ports::{
-    DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, OcrEnginePort,
-    PostprocessorPort,
+    DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort,
+    OcrEnginePort, PostprocessorPort,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -186,6 +186,27 @@ impl DocumentParserPort for ParserBloquesDebiles {
     }
 }
 
+struct ParserSinBloques;
+
+impl DocumentParserPort for ParserSinBloques {
+    fn parse(&self, path: &Path) -> Result<Document, DocumentError> {
+        Ok(Document {
+            id: "doc-no-layout".to_string(),
+            source_path: path.to_path_buf(),
+            pages: vec![Page {
+                number: 1,
+                dimensions: Dimensions {
+                    width: 1000,
+                    height: 1400,
+                },
+                blocks: Vec::new(),
+                image_data: None,
+            }],
+            metadata: HashMap::new(),
+        })
+    }
+}
+
 struct OcrEngineDeRefuerzo;
 
 impl OcrEnginePort for OcrEngineDeRefuerzo {
@@ -220,6 +241,48 @@ impl OcrEnginePort for OcrEngineDeRefuerzo {
 
     fn name(&self) -> &str {
         "OcrEngineDeRefuerzo"
+    }
+}
+
+struct LayoutRegistrador {
+    llamado: std::sync::Mutex<bool>,
+}
+
+impl LayoutRegistrador {
+    fn new() -> Self {
+        Self {
+            llamado: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn fue_llamado(&self) -> bool {
+        *self.llamado.lock().unwrap()
+    }
+}
+
+impl LayoutEnginePort for LayoutRegistrador {
+    fn analyze(&self, page: &Page) -> Result<Vec<Block>, LayoutError> {
+        *self.llamado.lock().unwrap() = true;
+
+        Ok(vec![Block {
+            block_type: BlockType::Text,
+            bounding_box: Rectangle {
+                x: 80,
+                y: 120,
+                width: page.dimensions.width - 160,
+                height: 160,
+            },
+            content: String::new(),
+            confidence: 0.0,
+            layout_confidence: Some(0.88),
+            embedded_image: None,
+            table_structure: None,
+            reading_order: 0,
+        }])
+    }
+
+    fn name(&self) -> &str {
+        "LayoutRegistrador"
     }
 }
 
@@ -760,6 +823,31 @@ fn test_pipeline_con_blueprint_usa_page_composer_sin_builder_legacy() {
     assert_eq!(
         blueprint.pages[0].elements.len(),
         resultado.document.pages[0].blocks.len()
+    );
+}
+
+#[test]
+fn test_pipeline_layout_engine_fallback_se_invoca_si_se_configura() {
+    let parser = Arc::new(ParserSinBloques);
+    let ocr = Arc::new(StubOcrEngine);
+    let layout = Arc::new(LayoutRegistrador::new());
+    let layout_ref = Arc::clone(&layout);
+    let pipeline = OcrPipeline::new(parser, ocr).with_layout_engine(layout);
+
+    let resultado = pipeline
+        .procesar_documento(
+            Path::new("/tmp/doc_layout_fallback_legacy.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("El fallback layout legacy debe seguir funcionando si se configura");
+
+    assert!(layout_ref.fue_llamado());
+    assert_eq!(resultado.pages[0].blocks.len(), 1);
+    assert_eq!(
+        resultado.pages[0].blocks[0].content,
+        "Texto OCR simulado bloque 1"
     );
 }
 

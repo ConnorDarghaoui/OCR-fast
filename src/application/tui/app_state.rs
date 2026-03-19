@@ -6,9 +6,7 @@ use crate::domain::{
     DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE,
 };
 use crate::infrastructure::job_store::normalizar_jobs_al_arranque;
-use crate::interfaces::ports::{
-    DocumentParserPort, JobExporterPort, JobStorePort, OcrEnginePort,
-};
+use crate::interfaces::ports::{DocumentParserPort, JobExporterPort, JobStorePort, OcrEnginePort};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -379,14 +377,8 @@ impl AppState {
         let ruta = self.trabajos[indice].document.source_path.clone();
         let idioma = self.idioma.clone();
 
-        self.ejecucion_jobs.iniciar(
-            id_trabajo.clone(),
-            ruta,
-            perfil,
-            idioma,
-            analizador,
-            motor,
-        );
+        self.ejecucion_jobs
+            .iniciar(id_trabajo.clone(), ruta, perfil, idioma, analizador, motor);
 
         log::info!(
             "Procesamiento iniciado para trabajo {}",

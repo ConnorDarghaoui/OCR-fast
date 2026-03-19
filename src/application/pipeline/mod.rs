@@ -1,7 +1,7 @@
-/// Cadena opcional de refinamientos encadenables por etapa del pipeline.
-pub mod refinement;
 /// Recuperaciones OCR costosas y opt-in fuera del camino principal.
 pub mod recovery;
+/// Cadena opcional de refinamientos encadenables por etapa del pipeline.
+pub mod refinement;
 
 use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
 use crate::infrastructure::page_composer::PageComposer;
