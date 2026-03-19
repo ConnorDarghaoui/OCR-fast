@@ -51,6 +51,7 @@ pdfium-render = "0.8.37"
 unicode-normalization = "0.1.25"
 lopdf = "0.34"
 tiff = "0.10"
+encoding_rs = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }
@@ -68,6 +69,8 @@ rocm    = ["ort/rocm"]
 # Habilitar tests de integracion con documentos reales (requiere modelos ONNX descargados).
 # Ejecutar con: cargo test --features ci_real_docs --test real_document_tests -- --ignored
 ci_real_docs = []
+# Habilita el puente opcional a compilacion real de LaTeX via binario externo.
+latex_compiler_validation = []
 
 [build-dependencies]
 reqwest = { version = "0.12", features = ["blocking"] }

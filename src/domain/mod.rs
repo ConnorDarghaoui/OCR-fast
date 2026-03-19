@@ -1,5 +1,9 @@
+/// Modelo canónico para reconstrucción visual de alta fidelidad.
+pub mod document_blueprint;
 /// Tipos de error de dominio y fronteras de fallo propagables entre capas.
 pub mod errors;
+
+pub use document_blueprint::*;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -156,8 +160,13 @@ pub struct Block {
     pub bounding_box: Rectangle,
     /// Contenido textual extraido (vacio si no aplica o aun no procesado).
     pub content: String,
-    /// Nivel de confianza de la deteccion (0.0 a 1.0).
+    /// Nivel de confianza OCR o de extracción final (0.0 a 1.0).
     pub confidence: f64,
+    /// Señal de confianza proveniente de layout si existió esa etapa.
+    ///
+    /// Se mantiene separada de `confidence` porque el OCR puede sobrescribir su
+    /// propia confianza sin destruir la señal estructural original del detector.
+    pub layout_confidence: Option<f64>,
     /// Imagen recortada embebida (para figuras, sellos, firmas).
     /// No se persiste: dato derivado de gran tamano.
     #[serde(skip)]
@@ -223,6 +232,10 @@ pub struct TableStructure {
     pub num_rows: u32,
     /// Numero total de columnas.
     pub num_cols: u32,
+    /// Filas que deben tratarse como encabezado lógico.
+    pub header_row_indices: Vec<u32>,
+    /// Anchuras relativas de columna en coordenadas de tabla.
+    pub column_widths: Vec<u32>,
 }
 
 impl TableStructure {
@@ -248,18 +261,61 @@ impl TableStructure {
         }
 
         let mut resultado = String::new();
+        let fila_header = self
+            .header_row_indices
+            .first()
+            .copied()
+            .unwrap_or(0)
+            .min(self.rows.len().saturating_sub(1) as u32) as usize;
 
         for (i, fila) in self.rows.iter().enumerate() {
             let celdas: Vec<String> = fila.iter().map(|c| c.content.clone()).collect();
             resultado.push_str(&format!("| {} |\n", celdas.join(" | ")));
 
-            if i == 0 {
+            if i == fila_header {
                 let separadores: Vec<String> = fila.iter().map(|_| "---".to_string()).collect();
                 resultado.push_str(&format!("| {} |\n", separadores.join(" | ")));
             }
         }
 
         resultado
+    }
+
+    /// Convierte la tabla a una representación tabulada de texto plano.
+    ///
+    /// Este formato existe para exportación `TXT` y para degradación controlada
+    /// en rutas donde la estructura visual exacta no puede conservarse.
+    ///
+    /// # Performance
+    ///
+    /// Recorre la tabla una sola vez y evita buffers adicionales fuera del
+    /// `Vec<String>` necesario para ensamblar cada fila.
+    pub fn to_plain_text(&self) -> String {
+        if self.rows.is_empty() {
+            return String::new();
+        }
+
+        let mut resultado = String::new();
+
+        for fila in &self.rows {
+            let celdas: Vec<String> = fila.iter().map(|c| c.content.clone()).collect();
+            resultado.push_str(&celdas.join("\t"));
+            resultado.push('\n');
+        }
+
+        resultado
+    }
+
+    /// Indica si una fila debe tratarse como encabezado lógico.
+    pub fn is_header_row(&self, row_index: usize) -> bool {
+        self.header_row_indices
+            .iter()
+            .any(|indice| *indice as usize == row_index)
+    }
+
+    /// Retorna el ancho inferido para una columna si existe metadata suficiente.
+    pub fn column_width(&self, column_index: usize) -> Option<u32> {
+        self.column_widths.get(column_index).copied()
     }
 }
 
@@ -278,6 +334,25 @@ pub struct TableCell {
     pub col_span: u32,
     /// Rectangulo de la celda en coordenadas de la tabla.
     pub bounding_box: Rectangle,
+    /// Pistas de estilo opcionales derivadas del analizador tabular.
+    pub style: Option<TableCellStyle>,
+}
+
+/// Pistas mínimas de estilo para exportación tabular rica.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TableCellStyle {
+    /// Alineación sugerida dentro de la celda.
+    pub alignment: TableCellAlignment,
+    /// Indica si el contenido debe tratarse como encabezado fuerte.
+    pub is_emphasized: bool,
+}
+
+/// Alineación tabular neutral para LaTeX y PDF.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum TableCellAlignment {
+    Left,
+    Center,
+    Right,
 }
 
 /// Bounding box axis-aligned expresado en píxeles absolutos.
@@ -304,10 +379,12 @@ pub struct Rectangle {
 /// de aplicación a nombres concretos de exportadores.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
 pub enum OutputFormat {
-    /// Markdown con estructura de bloques.
+    /// Texto plano en orden de lectura.
     #[default]
-    Markdown,
-    /// PDF tipo sandwich (imagen + texto invisible seleccionable).
+    Txt,
+    /// Fuente LaTeX con posicionamiento guiado por blueprint visual.
+    Latex,
+    /// PDF reconstruido desde layout, texto, tablas e imágenes.
     Pdf,
     /// JSON con el Job completo serializado.
     Json,
@@ -322,7 +399,8 @@ impl OutputFormat {
     /// tabla aquí centraliza compatibilidad y evita divergencia entre UI y storage.
     pub fn extension(&self) -> &'static str {
         match self {
-            Self::Markdown => "md",
+            Self::Txt => "txt",
+            Self::Latex => "tex",
             Self::Pdf => "pdf",
             Self::Json => "json",
         }
@@ -336,7 +414,8 @@ impl OutputFormat {
     /// tocar flujos de persistencia ni convenciones de archivos.
     pub fn nombre(&self) -> &'static str {
         match self {
-            Self::Markdown => "Markdown",
+            Self::Txt => "TXT",
+            Self::Latex => "LaTeX",
             Self::Pdf => "PDF",
             Self::Json => "JSON",
         }
@@ -349,7 +428,8 @@ impl OutputFormat {
     /// Se expone como slice estático para evitar asignaciones y para preservar un
     /// orden determinista en menús y pruebas de snapshot.
     pub const OPCIONES: &'static [OutputFormat] = &[
-        OutputFormat::Markdown,
+        OutputFormat::Txt,
+        OutputFormat::Latex,
         OutputFormat::Pdf,
         OutputFormat::Json,
     ];

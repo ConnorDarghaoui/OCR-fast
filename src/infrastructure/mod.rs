@@ -1,8 +1,10 @@
 /// Reconstrucción final del documento guiada por layout.
 pub mod document_assemblers;
+/// Builders de representación visual para exportación de alta fidelidad.
+pub mod document_blueprints;
 /// Adaptadores concretos de parsing y render de documentos.
 pub mod document_parsers;
-/// Materializadores de salida para Markdown, PDF y JSON.
+/// Materializadores de salida para TXT, LaTeX, PDF y JSON.
 pub mod exporters;
 /// Persistencia local de snapshots de trabajos.
 pub mod job_store;
@@ -17,6 +19,8 @@ pub mod preprocessors;
 
 /// Reexporta ensambladores de documento concretos.
 pub use document_assemblers::*;
+/// Reexporta builders de blueprint listos para integración directa.
+pub use document_blueprints::*;
 /// Reexporta exportadores concretos para integración directa.
 pub use exporters::*;
 /// Reexporta stores concretos listos para uso local.

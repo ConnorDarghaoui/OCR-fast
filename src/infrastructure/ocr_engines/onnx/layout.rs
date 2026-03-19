@@ -104,6 +104,7 @@ impl DocLayoutYoloEngine {
                 },
                 content: String::new(),
                 confidence: det.confianza as f64,
+                layout_confidence: Some(det.confianza as f64),
                 embedded_image: None,
                 table_structure: None,
                 reading_order: i as u32,

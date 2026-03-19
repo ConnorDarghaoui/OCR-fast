@@ -1694,6 +1694,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "dirs",
+ "encoding_rs",
  "env_logger",
  "fern",
  "flate2",

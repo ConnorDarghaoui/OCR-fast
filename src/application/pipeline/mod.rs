@@ -1,7 +1,14 @@
-use crate::domain::{BlockType, Document, ProcessingProfile};
+/// Cadena opcional de refinamientos encadenables por etapa del pipeline.
+pub mod refinement;
+
+use crate::domain::{BlockType, Document, DocumentBlueprint, ProcessingProfile};
 use crate::interfaces::ports::{
-    DocumentAssemblerPort, DocumentParserPort, LayoutEnginePort, OcrEnginePort, PostprocessorPort,
-    PreprocessorPort, TableAnalyzerPort,
+    DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, LayoutEnginePort,
+    OcrEnginePort, PostprocessorPort, PreprocessorPort, TableAnalyzerPort,
+};
+pub use refinement::{
+    ConfidenceBoostPass, DenoisePass, DeskewPass, NoopRefinementPass, RefinementBudget,
+    RefinementContext, RefinementPass, RefinementStage,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -21,6 +28,8 @@ pub enum PipelineStage {
     Tablas,
     Postproceso,
     Ensamblado,
+    Blueprint,
+    Refinamiento,
 }
 
 impl std::fmt::Display for PipelineStage {
@@ -33,6 +42,8 @@ impl std::fmt::Display for PipelineStage {
             Self::Tablas => "tablas",
             Self::Postproceso => "postproceso",
             Self::Ensamblado => "ensamblado",
+            Self::Blueprint => "blueprint",
+            Self::Refinamiento => "refinamiento",
         };
 
         f.write_str(nombre)
@@ -88,6 +99,19 @@ pub enum PipelineEvent {
     Error(PipelineFailure),
 }
 
+/// Resultado enriquecido del pipeline OCR completo.
+///
+/// El retorno separa el `Document` operativo del blueprint visual opcional para
+/// no forzar a todos los callers a pagar ni depender de exportación de alta
+/// fidelidad. La estructura mantiene compatibilidad progresiva con la API previa
+/// basada solo en `Document`.
+pub struct PipelineResult {
+    /// Documento OCR con bloques y contenido listo para persistencia o UI.
+    pub document: Document,
+    /// Modelo intermedio opcional para exportadores visuales ricos.
+    pub blueprint: Option<DocumentBlueprint>,
+}
+
 /// Orquestador inmutable del pipeline OCR multi-fase.
 ///
 /// `OcrPipeline` encapsula las dependencias por etapa y usa un builder ligero
@@ -107,6 +131,9 @@ pub struct OcrPipeline {
     ocr_engine: Arc<dyn OcrEnginePort>,
     table_analyzer: Option<Arc<dyn TableAnalyzerPort>>,
     postprocesador: Option<Arc<dyn PostprocessorPort>>,
+    blueprint_builder: Option<Arc<dyn DocumentBlueprintBuilderPort>>,
+    refinement_passes: Vec<Arc<dyn RefinementPass>>,
+    refinement_budget: RefinementBudget,
     ensamblador_documento: Option<Arc<dyn DocumentAssemblerPort>>,
 }
 
@@ -126,6 +153,9 @@ impl OcrPipeline {
             ocr_engine,
             table_analyzer: None,
             postprocesador: None,
+            blueprint_builder: None,
+            refinement_passes: Vec::new(),
+            refinement_budget: RefinementBudget::default(),
             ensamblador_documento: None,
         }
     }
@@ -151,6 +181,27 @@ impl OcrPipeline {
     /// Añade una fase de postproceso textual posterior a la inferencia.
     pub fn with_postprocessor(mut self, postprocesador: Arc<dyn PostprocessorPort>) -> Self {
         self.postprocesador = Some(postprocesador);
+        self
+    }
+
+    /// Añade una fase opcional de reconstrucción visual para exportadores ricos.
+    pub fn with_blueprint_builder(
+        mut self,
+        blueprint_builder: Arc<dyn DocumentBlueprintBuilderPort>,
+    ) -> Self {
+        self.blueprint_builder = Some(blueprint_builder);
+        self
+    }
+
+    /// Añade un pass de refinamiento opcional en la etapa declarada por el pass.
+    pub fn with_refinement_pass(mut self, refinement_pass: Arc<dyn RefinementPass>) -> Self {
+        self.refinement_passes.push(refinement_pass);
+        self
+    }
+
+    /// Configura el presupuesto máximo de passes por corrida del pipeline.
+    pub fn with_refinement_budget(mut self, refinement_budget: RefinementBudget) -> Self {
+        self.refinement_budget = refinement_budget;
         self
     }
 
@@ -193,6 +244,24 @@ impl OcrPipeline {
         notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
         cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Document, PipelineFailure> {
+        self.procesar_documento_con_blueprint(ruta, perfil, notificador, cancelacion)
+            .map(|resultado| resultado.document)
+    }
+
+    /// Ejecuta el pipeline y devuelve, opcionalmente, el blueprint visual final.
+    ///
+    /// Esta variante conserva la misma ruta crítica del OCR tradicional pero
+    /// añade una frontera explícita para reconstrucción visual posterior al
+    /// postproceso. La separación permite que callers sensibles a latencia sigan
+    /// consumiendo únicamente `procesar_documento`.
+    pub fn procesar_documento_con_blueprint(
+        &self,
+        ruta: &Path,
+        perfil: &ProcessingProfile,
+        notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
+        cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<PipelineResult, PipelineFailure> {
+        let mut refinement_consumidos = 0usize;
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -225,6 +294,17 @@ impl OcrPipeline {
         }
 
         self.verificar_cancelacion(cancelacion)?;
+        let mut blueprint = None;
+        self.ejecutar_refinamientos(
+            RefinementStage::BeforeLayout,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            cancelacion,
+            &mut refinement_consumidos,
+        )?;
 
         if let Some(ref layout_engine) = self.layout_engine {
             self.notificar(
@@ -265,6 +345,16 @@ impl OcrPipeline {
         log::info!("Pipeline: OCR completado ({})", self.ocr_engine.name());
 
         self.verificar_cancelacion(cancelacion)?;
+        self.ejecutar_refinamientos(
+            RefinementStage::AfterOcr,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            cancelacion,
+            &mut refinement_consumidos,
+        )?;
 
         if let Some(ref table_analyzer) = self.table_analyzer {
             let hay_tablas = documento
@@ -302,12 +392,24 @@ impl OcrPipeline {
             log::info!("Pipeline: postprocesamiento completado");
         }
 
+        self.verificar_cancelacion(cancelacion)?;
+        self.ejecutar_refinamientos(
+            RefinementStage::BeforeBlueprint,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            cancelacion,
+            &mut refinement_consumidos,
+        )?;
+
         if let Some(ref ensamblador_documento) = self.ensamblador_documento {
             self.notificar(
                 notificador,
                 PipelineEvent::FaseCambiada {
                     fase: "Reconstruyendo documento final".to_string(),
-                    progreso: 0.97,
+                    progreso: 0.95,
                 },
             );
             ensamblador_documento
@@ -319,6 +421,39 @@ impl OcrPipeline {
             );
         }
 
+        self.verificar_cancelacion(cancelacion)?;
+
+        let mut blueprint = if let Some(ref blueprint_builder) = self.blueprint_builder {
+            self.notificar(
+                notificador,
+                PipelineEvent::FaseCambiada {
+                    fase: "Reconstruyendo blueprint visual".to_string(),
+                    progreso: 0.97,
+                },
+            );
+            let blueprint = blueprint_builder
+                .build_blueprint(&documento)
+                .map_err(|error| Self::error_fase(PipelineStage::Blueprint, error))?;
+            log::info!(
+                "Pipeline: blueprint visual completado ({})",
+                blueprint_builder.name()
+            );
+            Some(blueprint)
+        } else {
+            None
+        };
+
+        self.ejecutar_refinamientos(
+            RefinementStage::AfterBlueprint,
+            &mut documento,
+            &mut blueprint,
+            ruta,
+            perfil,
+            notificador,
+            cancelacion,
+            &mut refinement_consumidos,
+        )?;
+
         self.notificar(
             notificador,
             PipelineEvent::FaseCambiada {
@@ -327,7 +462,10 @@ impl OcrPipeline {
             },
         );
 
-        Ok(documento)
+        Ok(PipelineResult {
+            document: documento,
+            blueprint,
+        })
     }
 
     fn verificar_cancelacion(
@@ -358,5 +496,85 @@ impl OcrPipeline {
         if let Some(tx) = notificador {
             let _ = tx.send(evento);
         }
+    }
+
+    fn ejecutar_refinamientos(
+        &self,
+        stage: RefinementStage,
+        documento: &mut Document,
+        blueprint: &mut Option<DocumentBlueprint>,
+        ruta: &Path,
+        perfil: &ProcessingProfile,
+        notificador: Option<&std::sync::mpsc::Sender<PipelineEvent>>,
+        cancelacion: Option<&Arc<std::sync::atomic::AtomicBool>>,
+        refinement_consumidos: &mut usize,
+    ) -> Result<(), PipelineFailure> {
+        if self.refinement_passes.is_empty() {
+            return Ok(());
+        }
+
+        let total_paginas = documento.pages.len() as u32;
+        for refinement_pass in self
+            .refinement_passes
+            .iter()
+            .filter(|pass| pass.stage() == stage)
+        {
+            self.verificar_cancelacion(cancelacion)?;
+            if !self.refinement_budget.allows(*refinement_consumidos) {
+                log::info!(
+                    "Pipeline: presupuesto de refinamiento agotado antes de {}",
+                    refinement_pass.name()
+                );
+                break;
+            }
+
+            self.notificar(
+                notificador,
+                PipelineEvent::FaseCambiada {
+                    fase: format!("Refinando documento ({})", refinement_pass.name()),
+                    progreso: progreso_refinamiento(stage),
+                },
+            );
+
+            let contexto = RefinementContext {
+                source_path: ruta,
+                profile: perfil,
+                total_pages: total_paginas,
+                stage,
+                consumed_passes: *refinement_consumidos,
+                remaining_passes: self.refinement_budget.remaining(*refinement_consumidos),
+            };
+
+            refinement_pass
+                .refine(documento, blueprint, &contexto)
+                .map_err(|error| Self::error_refinamiento(stage, refinement_pass.name(), error))?;
+            *refinement_consumidos += 1;
+            log::info!(
+                "Pipeline: refinamiento completado ({})",
+                refinement_pass.name()
+            );
+        }
+
+        Ok(())
+    }
+
+    fn error_refinamiento(
+        _stage: RefinementStage,
+        nombre_pass: &str,
+        error: Box<dyn std::error::Error + Send + Sync>,
+    ) -> PipelineFailure {
+        PipelineFailure::Fase {
+            fase: PipelineStage::Refinamiento,
+            mensaje: format!("refinamiento {nombre_pass}: {error}"),
+        }
+    }
+}
+
+fn progreso_refinamiento(stage: RefinementStage) -> f32 {
+    match stage {
+        RefinementStage::BeforeLayout => 0.22,
+        RefinementStage::AfterOcr => 0.62,
+        RefinementStage::BeforeBlueprint => 0.93,
+        RefinementStage::AfterBlueprint => 0.985,
     }
 }

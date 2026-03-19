@@ -1,20 +1,70 @@
+mod latex_ast;
+#[cfg(feature = "latex_compiler_validation")]
+mod latex_validation;
+
 use crate::domain::errors::ExportError;
-use crate::domain::{BlockType, Job, OutputFormat};
-use crate::interfaces::ports::{ExporterPort, JobExporterPort};
+use crate::domain::{
+    AlignmentHint, DocumentBlueprint, ElementBlueprint, ElementRole, EmphasisHint, Job,
+    OutputFormat, Page, ProcessingMode, Rectangle, TableCellAlignment, TableStructure,
+};
+use crate::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
+use crate::interfaces::ports::{DocumentBlueprintBuilderPort, ExporterPort, JobExporterPort};
+use encoding_rs::WINDOWS_1252;
+use latex_ast::{
+    render_document, LatexAsset, LatexContent, LatexDocument, LatexExportPlan, LatexImage,
+    LatexNode, LatexPackage, LatexParagraph, LatexTable, LatexTextBlock,
+};
 use lopdf::dictionary;
 use std::fs;
-use std::path::Path;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 /// Alias público del puerto de exportación para compatibilidad histórica.
 pub use crate::interfaces::ports::ExporterPort as Exporter;
+#[cfg(feature = "latex_compiler_validation")]
+pub use latex_validation::{
+    LatexCompilationArtifacts, LatexCompilerError, LatexCompilerValidator,
+    OCRFAST_RUN_TECTONIC_TESTS_ENV, OCRFAST_TECTONIC_BIN_ENV,
+};
+
+/// DPI asumido para convertir geometría raster a tamaños tipográficos.
+const DPI_REFERENCIA: f64 = 150.0;
+/// Factor de conversión: 1 punto PDF = 1/72 pulgadas.
+const PUNTOS_POR_PULGADA: f64 = 72.0;
+/// Fracción de alto del bounding box usada como tamaño de fuente PDF.
+const FACTOR_TAMANO_FUENTE: f64 = 0.8;
+/// Tamaño mínimo de fuente PDF.
+const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
+/// Tamaño máximo de fuente PDF.
+const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
+/// Calidad JPEG para recortes embebidos en PDF reconstruido.
+const PDF_IMAGE_JPEG_QUALITY: u8 = 82;
+/// Umbral conservador para degradar bloques OCR débiles a imagen en PDF.
+const PDF_FALLBACK_OCR_CONFIDENCE_THRESHOLD: f32 = 0.74;
+/// Umbral conservador para preservar recortes raster en LaTeX facsímil.
+const LATEX_FACSIMILE_OCR_CONFIDENCE_THRESHOLD: f32 = 0.74;
+/// La fuente core Helvetica usa una caja de 1000 unidades por EM.
+const HELVETICA_UNIDADES_POR_EM: f64 = 1000.0;
+/// Fallback conservador mientras el camino Unicode siga sin fuente embebida.
+const HELVETICA_GLYPH_WIDTH_FALLBACK: u16 = 556;
+/// Métricas estándar de Helvetica para ASCII printable (32..=126).
+const HELVETICA_GLYPH_WIDTHS_ASCII: [u16; 95] = [
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556,
+    556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667,
+    611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667,
+    667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500,
+    222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+];
 
 /// Registro por defecto que resuelve exportadores concretos según `OutputFormat`.
 ///
 /// La resolución vive en infraestructura para que la aplicación no dependa de
 /// constructores concretos ni replique el `match` en múltiples sitios.
 pub struct DefaultJobExporter {
-    markdown: Arc<dyn ExporterPort>,
+    txt: Arc<dyn ExporterPort>,
+    latex: Arc<dyn ExporterPort>,
     pdf: Arc<dyn ExporterPort>,
     json: Arc<dyn ExporterPort>,
 }
@@ -23,8 +73,9 @@ impl DefaultJobExporter {
     /// Construye el registro con los exportadores integrados del producto.
     pub fn new() -> Self {
         Self {
-            markdown: Arc::new(MarkdownExporter::new()),
-            pdf: Arc::new(PdfSandwichExporter::new()),
+            txt: Arc::new(TxtExporter::new()),
+            latex: Arc::new(LatexExporter::new()),
+            pdf: Arc::new(PdfReconstructedExporter::new()),
             json: Arc::new(JsonExporter::new()),
         }
     }
@@ -32,7 +83,8 @@ impl DefaultJobExporter {
     /// Resuelve el exportador concreto para el formato indicado.
     fn exportador_para(&self, formato: OutputFormat) -> &dyn ExporterPort {
         match formato {
-            OutputFormat::Markdown => self.markdown.as_ref(),
+            OutputFormat::Txt => self.txt.as_ref(),
+            OutputFormat::Latex => self.latex.as_ref(),
             OutputFormat::Pdf => self.pdf.as_ref(),
             OutputFormat::Json => self.json.as_ref(),
         }
@@ -52,253 +104,251 @@ impl JobExporterPort for DefaultJobExporter {
     }
 }
 
-/// Exportador de documentos OCR a Markdown legible por humanos.
-///
-/// La implementación prioriza inspección y portabilidad: el resultado puede
-/// abrirse en cualquier editor de texto y es útil para debugging, diffing y
-/// revisión manual del OCR sin depender de herramientas especializadas.
-pub struct MarkdownExporter;
+/// Exportador de documentos OCR a texto plano legible por humanos.
+pub struct TxtExporter;
 
-impl MarkdownExporter {
-    /// Construye un exportador Markdown sin estado interno.
+impl TxtExporter {
+    /// Construye un exportador TXT sin estado interno.
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for MarkdownExporter {
+impl Default for TxtExporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ExporterPort for MarkdownExporter {
+impl ExporterPort for TxtExporter {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
-        log::info!(
-            "Exportando trabajo {} a Markdown: {:?}",
-            job.id,
-            output_path
-        );
+        asegurar_directorio_padre(output_path)?;
 
-        let mut content = String::new();
-
-        content.push_str(&format!("# Documento: {}\n\n", job.document.id));
-        content.push_str(&format!(
-            "- **Archivo fuente**: {}\n",
+        let mut contenido = String::new();
+        contenido.push_str(&format!("Documento: {}\n", job.document.id));
+        contenido.push_str(&format!(
+            "Archivo fuente: {}\n",
             job.document.source_path.display()
         ));
-        content.push_str(&format!("- **Perfil**: {:?}\n", job.profile));
-        content.push_str(&format!("- **Estado**: {:?}\n\n", job.status));
-        content.push_str("---\n\n");
+        contenido.push_str(&format!("Perfil: {:?}\n", job.profile));
+        contenido.push_str(&format!("Estado: {:?}\n\n", job.status));
 
-        for page in &job.document.pages {
-            content.push_str(&format!("## Pagina {}\n\n", page.number));
+        let blueprint = construir_blueprint(&job.document)?;
 
-            for block in bloques_ordenados(page) {
-                match block.block_type {
-                    BlockType::Title => {
-                        content.push_str(&format!("### {}\n\n", block.content));
+        for pagina in &blueprint.pages {
+            contenido.push_str(&format!("===== PAGINA {} =====\n\n", pagina.number));
+
+            for elemento in &pagina.elements {
+                match elemento.role {
+                    ElementRole::Title => {
+                        contenido.push_str(&format!("{}\n\n", elemento.text.to_uppercase()));
                     }
-                    BlockType::Text => {
-                        content.push_str(&format!("{}\n\n", block.content));
-                    }
-                    BlockType::Table => {
-                        if let Some(ref estructura) = block.table_structure {
-                            let tabla_md = estructura.to_markdown();
-                            if !tabla_md.is_empty() {
-                                content.push_str(&tabla_md);
-                                content.push('\n');
-                            } else {
-                                content.push_str(&format!("```\n[Tabla vacía]\n```\n\n"));
-                            }
-                        } else if !block.content.is_empty() {
-                            content.push_str(&format!("```\n{}\n```\n\n", block.content));
-                        } else {
-                            content.push_str("```\n[Tabla sin contenido]\n```\n\n");
+                    ElementRole::Paragraph | ElementRole::ListItem => {
+                        if !elemento.text.trim().is_empty() {
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
                         }
                     }
-                    BlockType::Formula => {
-                        content.push_str(&format!("${}$\n\n", block.content));
+                    ElementRole::Table => {
+                        if let Some(ref tabla) = elemento.table {
+                            let tabla_txt = tabla.to_plain_text();
+                            if !tabla_txt.is_empty() {
+                                contenido.push_str(&tabla_txt);
+                                contenido.push('\n');
+                            }
+                        } else if !elemento.text.trim().is_empty() {
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
+                        } else {
+                            contenido.push_str("[Tabla sin contenido]\n\n");
+                        }
                     }
-                    _ => {
-                        content.push_str(&format!(
-                            "<!-- {:?}: {} -->\n\n",
-                            block.block_type, block.content
-                        ));
+                    ElementRole::Formula => {
+                        if !elemento.text.trim().is_empty() {
+                            contenido.push_str("Formula: ");
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
+                        }
+                    }
+                    ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
+                        contenido.push_str("[Activo visual preservado en exportadores ricos]\n\n");
+                    }
+                    ElementRole::Separator | ElementRole::Unknown => {
+                        if !elemento.text.trim().is_empty() {
+                            contenido.push_str(&elemento.text);
+                            contenido.push_str("\n\n");
+                        }
                     }
                 }
             }
         }
 
-        fs::write(output_path, content)?;
-        log::info!("Exportacion Markdown completada");
+        fs::write(output_path, contenido)?;
         Ok(())
     }
 
     fn format_name(&self) -> &str {
-        "Markdown"
+        "TXT"
     }
 }
 
-/// Exportador a PDF sandwich con texto invisible seleccionable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LatexExportMode {
+    Semantic,
+    Facsimile,
+}
+
+/// Exportador LaTeX configurable entre reflujo semántico y facsímil.
 ///
-/// La estrategia conserva la imagen original como fondo y superpone una capa de
-/// texto OCR en coordenadas PDF. Ese diseño preserva fidelidad visual mientras
-/// habilita búsqueda y selección, que es el comportamiento esperado en flujos de
-/// archivo y revisión documental.
-///
-/// # Trade-offs
-///
-/// Usar `lopdf` directamente reduce abstracciones y dependencia de motores PDF
-/// pesados, pero obliga a controlar manualmente coordenadas y operadores.
-pub struct PdfSandwichExporter;
+/// El modo por defecto prioriza editabilidad y estructura. La ruta facsímil se
+/// conserva como constructor separado para casos donde la geometría del escaneo
+/// importe más que el reflujo del texto.
+pub struct LatexExporter {
+    mode: LatexExportMode,
+}
 
-/// DPI asumido para la conversion pixel -> puntos PDF.
-/// 150 DPI es un valor conservador para documentos escaneados.
-const DPI_REFERENCIA: f64 = 150.0;
-
-/// Factor de conversion: 1 punto PDF = 1/72 pulgadas.
-const PUNTOS_POR_PULGADA: f64 = 72.0;
-
-/// Fraccion de la altura del bounding box usada como tamano de fuente estimado.
-/// 0.8 deja un margen del 20% para evitar que el texto invisible desborde el bloque.
-const FACTOR_TAMANO_FUENTE: f64 = 0.8;
-
-/// Tamano minimo de fuente en puntos PDF para la capa de texto invisible.
-/// Evita fuentes de tamano cero o negativo en bloques de altura despreciable.
-const TAMANO_FUENTE_MINIMO_PT: f64 = 6.0;
-
-/// Tamano maximo de fuente en puntos PDF para la capa de texto invisible.
-/// Limita bloques de altura exagerada (ej: imagen de pagina completa).
-const TAMANO_FUENTE_MAXIMO_PT: f64 = 72.0;
-
-impl PdfSandwichExporter {
-    /// Construye un exportador PDF sandwich sin estado mutable.
+impl LatexExporter {
+    /// Construye el exportador LaTeX semántico por defecto.
     pub fn new() -> Self {
-        Self
+        Self::new_semantic()
     }
 
-    /// Convierte pixeles a puntos PDF.
-    fn px_a_pt(px: u32) -> f64 {
-        (px as f64) * (PUNTOS_POR_PULGADA / DPI_REFERENCIA)
+    /// Construye el exportador LaTeX orientado a edición y estructura lógica.
+    pub fn new_semantic() -> Self {
+        Self {
+            mode: LatexExportMode::Semantic,
+        }
+    }
+
+    /// Construye el exportador LaTeX facsímil basado en posicionamiento.
+    pub fn new_facsimile() -> Self {
+        Self {
+            mode: LatexExportMode::Facsimile,
+        }
     }
 }
 
-impl Default for PdfSandwichExporter {
+impl Default for LatexExporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ExporterPort for PdfSandwichExporter {
+impl ExporterPort for LatexExporter {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
-        use lopdf::content::{Content, Operation};
+        asegurar_directorio_padre(output_path)?;
+
+        let blueprint = construir_blueprint(&job.document)?;
+        let directorio_assets = directorio_assets(output_path);
+        fs::create_dir_all(&directorio_assets)?;
+
+        let nombre_directorio_assets = directorio_assets
+            .file_name()
+            .and_then(|valor| valor.to_str())
+            .unwrap_or("documento_assets");
+        let plan = match self.mode {
+            _ if blueprint.processing_mode == ProcessingMode::VisualPreservation => {
+                construir_plan_latex_visual_preservation(job, &blueprint, nombre_directorio_assets)?
+            }
+            LatexExportMode::Semantic => {
+                construir_plan_latex_semantico(job, &blueprint, nombre_directorio_assets)?
+            }
+            LatexExportMode::Facsimile => {
+                construir_plan_latex_facsimil(job, &blueprint, nombre_directorio_assets)?
+            }
+        };
+        for asset in &plan.assets {
+            fs::write(directorio_assets.join(&asset.file_name), &asset.bytes)?;
+        }
+
+        fs::write(output_path, render_document(&plan.document))?;
+        Ok(())
+    }
+
+    fn format_name(&self) -> &str {
+        "LaTeX"
+    }
+}
+
+/// Exportador a PDF reconstruido a partir del blueprint visual.
+///
+/// Esta ruta renderiza texto, tablas, líneas e imágenes directamente sobre una
+/// página PDF en blanco. El resultado deja de depender de incrustar el escaneo
+/// completo y se acerca más a un documento reeditable/facsímil generado.
+pub struct PdfReconstructedExporter;
+
+impl PdfReconstructedExporter {
+    /// Construye un exportador PDF reconstruido sin estado mutable.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for PdfReconstructedExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExporterPort for PdfReconstructedExporter {
+    fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
+        use lopdf::content::Content;
         use lopdf::{Document, Object};
 
-        log::info!(
-            "Exportando trabajo {} a PDF Sandwich: {:?}",
-            job.id,
-            output_path
-        );
+        asegurar_directorio_padre(output_path)?;
 
+        let blueprint = construir_blueprint(&job.document)?;
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
-
         let font_id = doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
             "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
         });
-
         let mut page_ids: Vec<Object> = Vec::new();
 
-        for pagina in &job.document.pages {
-            let ancho_pt = Self::px_a_pt(pagina.dimensions.width);
-            let alto_pt = Self::px_a_pt(pagina.dimensions.height);
-
-            let mut operaciones_imagen: Vec<Operation> = Vec::new();
+        for pagina in &blueprint.pages {
+            let ancho_pt = px_a_pt(pagina.dimensions.width);
+            let alto_pt = px_a_pt(pagina.dimensions.height);
+            let mut operaciones = Vec::new();
             let mut recursos_xobject = lopdf::Dictionary::new();
 
-            if let Some(ref datos_imagen) = pagina.image_data {
-                match Self::crear_xobject_imagen(&mut doc, datos_imagen) {
-                    Ok((xobj_id, img_name)) => {
-                        recursos_xobject.set(img_name.clone(), xobj_id);
-
-                        operaciones_imagen.push(Operation::new("q", vec![]));
-                        operaciones_imagen.push(Operation::new(
-                            "cm",
-                            vec![
-                                ancho_pt.into(),
-                                0.into(),
-                                0.into(),
-                                alto_pt.into(),
-                                0.into(),
-                                0.into(),
-                            ],
-                        ));
-                        operaciones_imagen.push(Operation::new(
-                            "Do",
-                            vec![Object::Name(img_name.into_bytes())],
-                        ));
-                        operaciones_imagen.push(Operation::new("Q", vec![]));
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "No se pudo crear XObject de imagen para pagina {}: {}",
-                            pagina.number,
-                            e
-                        );
-                    }
+            if blueprint.processing_mode == ProcessingMode::VisualPreservation
+                && agregar_fondo_pagina_visual_pdf(
+                    job,
+                    pagina.number,
+                    pagina.dimensions.width,
+                    pagina.dimensions.height,
+                    &mut doc,
+                    &mut recursos_xobject,
+                    &mut operaciones,
+                )?
+            {
+                for elemento in &pagina.elements {
+                    agregar_texto_pdf_invisible(pagina, elemento, &mut operaciones);
+                }
+            } else {
+                for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
+                    agregar_elemento_pdf(
+                        job,
+                        pagina,
+                        elemento,
+                        indice_elemento,
+                        &mut doc,
+                        &mut recursos_xobject,
+                        &mut operaciones,
+                    )?;
                 }
             }
-
-            let mut operaciones_texto: Vec<Operation> = Vec::new();
-            let bloques_con_texto: Vec<_> = bloques_ordenados(pagina)
-                .into_iter()
-                .filter(|b| !b.content.trim().is_empty())
-                .collect();
-
-            if !bloques_con_texto.is_empty() {
-                operaciones_texto.push(Operation::new("BT", vec![]));
-                operaciones_texto.push(Operation::new("Tr", vec![3.into()]));
-
-                for bloque in &bloques_con_texto {
-                    let bbox = &bloque.bounding_box;
-
-                    let alto_bloque_pt = Self::px_a_pt(bbox.height);
-                    let tamano_fuente = (alto_bloque_pt * FACTOR_TAMANO_FUENTE)
-                        .max(TAMANO_FUENTE_MINIMO_PT)
-                        .min(TAMANO_FUENTE_MAXIMO_PT);
-
-                    let x_pt = Self::px_a_pt(bbox.x);
-                    let y_pt = alto_pt - Self::px_a_pt(bbox.y) - alto_bloque_pt;
-
-                    operaciones_texto.push(Operation::new(
-                        "Tf",
-                        vec!["F1".into(), tamano_fuente.into()],
-                    ));
-                    operaciones_texto.push(Operation::new("Td", vec![x_pt.into(), y_pt.into()]));
-                    operaciones_texto.push(Operation::new(
-                        "Tj",
-                        vec![Object::string_literal(bloque.content.clone())],
-                    ));
-                }
-
-                operaciones_texto.push(Operation::new("ET", vec![]));
-            }
-
-            let mut todas_las_ops = operaciones_imagen;
-            todas_las_ops.extend(operaciones_texto);
-
             let content = Content {
-                operations: todas_las_ops,
+                operations: operaciones,
             };
             let content_id = doc.add_object(lopdf::Stream::new(
                 dictionary! {},
                 content.encode().map_err(|e| {
                     ExportError::SerializationError(format!(
-                        "Error codificando content stream: {}",
-                        e
+                        "Error codificando content stream: {e}"
                     ))
                 })?,
             ));
@@ -315,7 +365,6 @@ impl ExporterPort for PdfSandwichExporter {
             }
 
             let resources_id = doc.add_object(Object::Dictionary(resources_dict));
-
             let page_id = doc.add_object(dictionary! {
                 "Type" => "Page",
                 "Parent" => pages_id,
@@ -328,77 +377,35 @@ impl ExporterPort for PdfSandwichExporter {
                     Object::Real(alto_pt as f32),
                 ],
             });
-
             page_ids.push(page_id.into());
         }
 
         let pages = dictionary! {
             "Type" => "Pages",
             "Kids" => page_ids,
-            "Count" => job.document.pages.len() as u32,
+            "Count" => blueprint.pages.len() as u32,
         };
-        doc.objects.insert(pages_id, Object::Dictionary(pages));
+        doc.objects
+            .insert(pages_id, lopdf::Object::Dictionary(pages));
 
         let catalog_id = doc.add_object(dictionary! {
             "Type" => "Catalog",
             "Pages" => pages_id,
         });
         doc.trailer.set("Root", catalog_id);
-
         doc.compress();
         doc.save(output_path)
-            .map_err(|e| ExportError::SerializationError(format!("Error guardando PDF: {}", e)))?;
+            .map_err(|e| ExportError::SerializationError(format!("Error guardando PDF: {e}")))?;
 
-        log::info!(
-            "PDF Sandwich exportado: {} paginas -> {:?}",
-            job.document.pages.len(),
-            output_path
-        );
         Ok(())
     }
 
     fn format_name(&self) -> &str {
-        "PDF Sandwich"
-    }
-}
-
-impl PdfSandwichExporter {
-    /// Decodifica los bytes de imagen y crea un XObject Image en el documento PDF.
-    ///
-    /// Retorna el ObjectId del XObject y el nombre de recurso asignado.
-    fn crear_xobject_imagen(
-        doc: &mut lopdf::Document,
-        datos_imagen: &[u8],
-    ) -> Result<(lopdf::ObjectId, String), String> {
-        let imagen_dyn =
-            image::load_from_memory(datos_imagen).map_err(|e| format!("Decodificacion: {}", e))?;
-
-        let rgb = imagen_dyn.to_rgb8();
-        let (ancho, alto) = rgb.dimensions();
-        let pixeles_raw = rgb.into_raw();
-
-        let img_dict = lopdf::dictionary! {
-            "Type" => "XObject",
-            "Subtype" => "Image",
-            "Width" => ancho as i64,
-            "Height" => alto as i64,
-            "ColorSpace" => "DeviceRGB",
-            "BitsPerComponent" => 8,
-        };
-
-        let img_stream = lopdf::Stream::new(img_dict, pixeles_raw);
-        let xobj_id = doc.add_object(img_stream);
-
-        let nombre = format!("Im{}", xobj_id.0);
-
-        Ok((xobj_id, nombre))
+        "PDF Reconstruido"
     }
 }
 
 /// Exportador a JSON estructurado para integración y depuración.
-///
-/// A diferencia de Markdown o PDF, este formato prioriza preservación completa
-/// de metadatos y estructura para integraciones posteriores o pruebas.
 pub struct JsonExporter;
 
 impl JsonExporter {
@@ -416,13 +423,10 @@ impl Default for JsonExporter {
 
 impl ExporterPort for JsonExporter {
     fn export(&self, job: &Job, output_path: &Path) -> Result<(), ExportError> {
-        log::info!("Exportando trabajo {} a JSON: {:?}", job.id, output_path);
-
+        asegurar_directorio_padre(output_path)?;
         let json_content = serde_json::to_string_pretty(job)
             .map_err(|e| ExportError::SerializationError(e.to_string()))?;
-
         fs::write(output_path, json_content)?;
-        log::info!("Exportacion JSON completada");
         Ok(())
     }
 
@@ -431,14 +435,1087 @@ impl ExporterPort for JsonExporter {
     }
 }
 
-/// Retorna una vista estable de bloques ordenados por `reading_order`.
-fn bloques_ordenados(pagina: &crate::domain::Page) -> Vec<&crate::domain::Block> {
-    let mut bloques: Vec<_> = pagina.blocks.iter().collect();
-    bloques.sort_by(|a, b| {
-        a.reading_order
-            .cmp(&b.reading_order)
-            .then(a.bounding_box.y.cmp(&b.bounding_box.y))
-            .then(a.bounding_box.x.cmp(&b.bounding_box.x))
+fn construir_blueprint(
+    documento: &crate::domain::Document,
+) -> Result<DocumentBlueprint, ExportError> {
+    HighFidelityBlueprintBuilder::new()
+        .build_blueprint(documento)
+        .map_err(|e| {
+            ExportError::SerializationError(format!("No se pudo construir blueprint: {e}"))
+        })
+}
+
+fn asegurar_directorio_padre(ruta: &Path) -> Result<(), ExportError> {
+    if let Some(parent) = ruta.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn directorio_assets(ruta_salida: &Path) -> PathBuf {
+    let stem = ruta_salida
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("documento");
+    ruta_salida.with_file_name(format!("{stem}_assets"))
+}
+
+fn px_a_pt(px: u32) -> f64 {
+    (px as f64) * (PUNTOS_POR_PULGADA / DPI_REFERENCIA)
+}
+
+fn obtener_pagina<'a>(job: &'a Job, numero_pagina: u32) -> Result<&'a Page, ExportError> {
+    job.document
+        .pages
+        .iter()
+        .find(|pagina| pagina.number == numero_pagina)
+        .ok_or_else(|| {
+            ExportError::SerializationError(format!(
+                "No existe la pagina {numero_pagina} en el documento"
+            ))
+        })
+}
+
+fn recortar_imagen_desde_referencia(
+    job: &Job,
+    numero_pagina: u32,
+    bounding_box: &Rectangle,
+) -> Result<Vec<u8>, ExportError> {
+    let pagina = obtener_pagina(job, numero_pagina)?;
+    let datos = pagina.image_data.as_ref().ok_or_else(|| {
+        ExportError::SerializationError(format!(
+            "La pagina {numero_pagina} no conserva raster en memoria"
+        ))
+    })?;
+
+    let imagen = image::load_from_memory(datos).map_err(|e| {
+        ExportError::SerializationError(format!("No se pudo decodificar raster: {e}"))
+    })?;
+
+    let ancho = imagen.width();
+    let alto = imagen.height();
+    let x = bounding_box.x.min(ancho);
+    let y = bounding_box.y.min(alto);
+    let w = bounding_box.width.min(ancho.saturating_sub(x)).max(1);
+    let h = bounding_box.height.min(alto.saturating_sub(y)).max(1);
+
+    let recorte = imagen.crop_imm(x, y, w, h);
+    let mut cursor = Cursor::new(Vec::new());
+    recorte
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| {
+            ExportError::SerializationError(format!("No se pudo codificar recorte PNG: {e}"))
+        })?;
+
+    Ok(cursor.into_inner())
+}
+
+fn agregar_elemento_pdf(
+    job: &Job,
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    indice_elemento: usize,
+    doc: &mut lopdf::Document,
+    recursos_xobject: &mut lopdf::Dictionary,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) -> Result<(), ExportError> {
+    if debe_preservarse_como_imagen_en_pdf(elemento)
+        && agregar_recorte_pdf(
+            job,
+            pagina.dimensions.height,
+            pagina.number,
+            &elemento.bounding_box,
+            doc,
+            recursos_xobject,
+            operaciones,
+        )?
+    {
+        return Ok(());
+    }
+
+    match elemento.role {
+        ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
+            agregar_imagen_pdf(
+                job,
+                pagina,
+                elemento,
+                indice_elemento,
+                doc,
+                recursos_xobject,
+                operaciones,
+            )?;
+        }
+        ElementRole::Table => {
+            if let Some(ref tabla) = elemento.table {
+                agregar_tabla_pdf(pagina, elemento, tabla, operaciones);
+            } else {
+                agregar_texto_pdf(pagina, elemento, operaciones);
+            }
+        }
+        ElementRole::Separator => agregar_separador_pdf(pagina, elemento, operaciones),
+        _ => agregar_texto_pdf(pagina, elemento, operaciones),
+    }
+
+    Ok(())
+}
+
+fn agregar_imagen_pdf(
+    job: &Job,
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    _indice_elemento: usize,
+    doc: &mut lopdf::Document,
+    recursos_xobject: &mut lopdf::Dictionary,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) -> Result<(), ExportError> {
+    let Some(ref imagen) = elemento.image_crop else {
+        return Ok(());
+    };
+
+    let _ = agregar_recorte_pdf(
+        job,
+        pagina.dimensions.height,
+        imagen.page_number,
+        &imagen.bounding_box,
+        doc,
+        recursos_xobject,
+        operaciones,
+    )?;
+    Ok(())
+}
+
+fn debe_preservarse_como_imagen_en_pdf(elemento: &ElementBlueprint) -> bool {
+    matches!(
+        elemento.role,
+        ElementRole::Title
+            | ElementRole::Paragraph
+            | ElementRole::Table
+            | ElementRole::Formula
+            | ElementRole::ListItem
+            | ElementRole::Unknown
+    ) && elemento
+        .ocr_confidence
+        .is_some_and(|valor| valor < PDF_FALLBACK_OCR_CONFIDENCE_THRESHOLD)
+}
+
+fn agregar_recorte_pdf(
+    job: &Job,
+    altura_pagina_px: u32,
+    numero_pagina: u32,
+    bounding_box: &Rectangle,
+    doc: &mut lopdf::Document,
+    recursos_xobject: &mut lopdf::Dictionary,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) -> Result<bool, ExportError> {
+    let bytes = match recortar_imagen_desde_referencia(job, numero_pagina, bounding_box) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(false),
+    };
+
+    let (xobject_id, nombre) = crear_xobject_imagen_pdf(doc, &bytes).map_err(|e| {
+        ExportError::SerializationError(format!("No se pudo crear XObject PDF: {e}"))
+    })?;
+    recursos_xobject.set(nombre.clone(), xobject_id);
+
+    let x_pt = px_a_pt(bounding_box.x);
+    let y_pt = px_a_pt(bounding_box.y);
+    let width_pt = px_a_pt(bounding_box.width);
+    let height_pt = px_a_pt(bounding_box.height);
+    let origin_y = px_a_pt(altura_pagina_px) - y_pt - height_pt;
+
+    operaciones.push(lopdf::content::Operation::new("q", vec![]));
+    operaciones.push(lopdf::content::Operation::new(
+        "cm",
+        vec![
+            lopdf::Object::Real(width_pt as f32),
+            0.into(),
+            0.into(),
+            lopdf::Object::Real(height_pt as f32),
+            lopdf::Object::Real(x_pt as f32),
+            lopdf::Object::Real(origin_y as f32),
+        ],
+    ));
+    operaciones.push(lopdf::content::Operation::new(
+        "Do",
+        vec![lopdf::Object::Name(nombre.into_bytes())],
+    ));
+    operaciones.push(lopdf::content::Operation::new("Q", vec![]));
+    Ok(true)
+}
+
+fn agregar_texto_pdf(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) {
+    agregar_texto_pdf_con_modo(pagina, elemento, &elemento.text, operaciones, false);
+}
+
+fn agregar_texto_pdf_invisible(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) {
+    let texto = if elemento.role == ElementRole::Table {
+        elemento
+            .table
+            .as_ref()
+            .map(TableStructure::to_plain_text)
+            .unwrap_or_else(|| elemento.text.clone())
+    } else {
+        elemento.text.clone()
+    };
+
+    agregar_texto_pdf_con_modo(pagina, elemento, &texto, operaciones, true);
+}
+
+fn agregar_texto_pdf_con_modo(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    texto: &str,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+    invisible: bool,
+) {
+    if texto.trim().is_empty() {
+        return;
+    }
+
+    let width_pt = px_a_pt(elemento.bounding_box.width).max(12.0);
+    let height_pt = px_a_pt(elemento.bounding_box.height).max(10.0);
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let pagina_alto_pt = px_a_pt(pagina.dimensions.height);
+    let font_size = (height_pt * FACTOR_TAMANO_FUENTE)
+        .max(TAMANO_FUENTE_MINIMO_PT)
+        .min(TAMANO_FUENTE_MAXIMO_PT);
+    let line_height = (font_size * 1.18).max(8.0);
+    let ancho_util = (width_pt - 4.0).max(10.0);
+    let lineas = envolver_texto_para_pdf(texto, ancho_util, font_size);
+
+    for (indice_linea, linea) in lineas.iter().enumerate() {
+        let baseline_y = pagina_alto_pt - y_pt - font_size - (indice_linea as f64 * line_height);
+        if baseline_y <= 0.0 {
+            break;
+        }
+
+        let ancho_estimado = estimar_ancho_linea_pdf(linea, font_size);
+        let margen_izquierdo = elemento.style.left_indent_pt as f64;
+        let texto_x = match elemento.style.alignment {
+            AlignmentHint::Center => x_pt + ((width_pt - ancho_estimado) / 2.0).max(0.0),
+            AlignmentHint::Right => x_pt + (width_pt - ancho_estimado - 2.0).max(0.0),
+            AlignmentHint::Left | AlignmentHint::FullWidth => x_pt + margen_izquierdo + 1.0,
+        };
+
+        operaciones.push(lopdf::content::Operation::new("BT", vec![]));
+        operaciones.push(lopdf::content::Operation::new(
+            "Tf",
+            vec!["F1".into(), lopdf::Object::Real(font_size as f32)],
+        ));
+        if invisible {
+            operaciones.push(lopdf::content::Operation::new("Tr", vec![3.into()]));
+        }
+        operaciones.push(lopdf::content::Operation::new(
+            "Tm",
+            vec![
+                1.into(),
+                0.into(),
+                0.into(),
+                1.into(),
+                lopdf::Object::Real(texto_x as f32),
+                lopdf::Object::Real(baseline_y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new(
+            "Tj",
+            vec![objeto_texto_pdf_helvetica(linea)],
+        ));
+        operaciones.push(lopdf::content::Operation::new("ET", vec![]));
+    }
+}
+
+fn agregar_fondo_pagina_visual_pdf(
+    job: &Job,
+    numero_pagina: u32,
+    ancho_pagina_px: u32,
+    altura_pagina_px: u32,
+    doc: &mut lopdf::Document,
+    recursos_xobject: &mut lopdf::Dictionary,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) -> Result<bool, ExportError> {
+    let pagina = obtener_pagina(job, numero_pagina)?;
+    let Some(bytes) = pagina.image_data.as_ref() else {
+        return Ok(false);
+    };
+
+    let (xobject_id, nombre) = crear_xobject_imagen_pdf(doc, bytes).map_err(|e| {
+        ExportError::SerializationError(format!("No se pudo crear XObject PDF: {e}"))
+    })?;
+    recursos_xobject.set(nombre.clone(), xobject_id);
+
+    let width_pt = px_a_pt(ancho_pagina_px);
+    let height_pt = px_a_pt(altura_pagina_px);
+    operaciones.push(lopdf::content::Operation::new("q", vec![]));
+    operaciones.push(lopdf::content::Operation::new(
+        "cm",
+        vec![
+            lopdf::Object::Real(width_pt as f32),
+            0.into(),
+            0.into(),
+            lopdf::Object::Real(height_pt as f32),
+            0.into(),
+            0.into(),
+        ],
+    ));
+    operaciones.push(lopdf::content::Operation::new(
+        "Do",
+        vec![lopdf::Object::Name(nombre.into_bytes())],
+    ));
+    operaciones.push(lopdf::content::Operation::new("Q", vec![]));
+    Ok(true)
+}
+
+fn agregar_tabla_pdf(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    tabla: &TableStructure,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) {
+    let filas = tabla.rows.len().max(1) as f64;
+    let columnas = tabla.num_cols.max(1) as f64;
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let width_pt = px_a_pt(elemento.bounding_box.width).max(24.0);
+    let height_pt = px_a_pt(elemento.bounding_box.height).max(24.0);
+    let pagina_alto_pt = px_a_pt(pagina.dimensions.height);
+    let celda_ancho = width_pt / columnas;
+    let celda_alto = height_pt / filas;
+    let base_y = pagina_alto_pt - y_pt - height_pt;
+
+    operaciones.push(lopdf::content::Operation::new("q", vec![]));
+    operaciones.push(lopdf::content::Operation::new("w", vec![0.8.into()]));
+
+    for columna in 0..=columnas as usize {
+        let x = x_pt + (columna as f64 * celda_ancho);
+        operaciones.push(lopdf::content::Operation::new(
+            "m",
+            vec![
+                lopdf::Object::Real(x as f32),
+                lopdf::Object::Real(base_y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new(
+            "l",
+            vec![
+                lopdf::Object::Real(x as f32),
+                lopdf::Object::Real((base_y + height_pt) as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new("S", vec![]));
+    }
+
+    for fila in 0..=filas as usize {
+        let y = base_y + (fila as f64 * celda_alto);
+        operaciones.push(lopdf::content::Operation::new(
+            "m",
+            vec![
+                lopdf::Object::Real(x_pt as f32),
+                lopdf::Object::Real(y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new(
+            "l",
+            vec![
+                lopdf::Object::Real((x_pt + width_pt) as f32),
+                lopdf::Object::Real(y as f32),
+            ],
+        ));
+        operaciones.push(lopdf::content::Operation::new("S", vec![]));
+    }
+
+    operaciones.push(lopdf::content::Operation::new("Q", vec![]));
+
+    for (indice_fila, fila) in tabla.rows.iter().enumerate() {
+        for (indice_columna, celda) in fila.iter().enumerate() {
+            let mut estilo_celda = elemento.style.clone();
+            if let Some(ref style) = celda.style {
+                estilo_celda.alignment = alignment_hint_from_table(style.alignment);
+                if style.is_emphasized {
+                    estilo_celda.emphasis = EmphasisHint::Strong;
+                }
+            } else if tabla.is_header_row(indice_fila) {
+                estilo_celda.emphasis = EmphasisHint::Strong;
+                estilo_celda.alignment = AlignmentHint::Center;
+            }
+
+            let caja = ElementBlueprint {
+                role: ElementRole::Paragraph,
+                bounding_box: Rectangle {
+                    x: elemento.bounding_box.x
+                        + ((indice_columna as f64 * elemento.bounding_box.width as f64 / columnas)
+                            .round() as u32)
+                        + 4,
+                    y: elemento.bounding_box.y
+                        + ((indice_fila as f64 * elemento.bounding_box.height as f64 / filas)
+                            .round() as u32)
+                        + 4,
+                    width: (celda_ancho.max(8.0) as u32).saturating_sub(8),
+                    height: (celda_alto.max(8.0) as u32).saturating_sub(8),
+                },
+                reading_order: 0,
+                column_index: 0,
+                total_columns: 1,
+                text: celda.content.clone(),
+                ocr_confidence: elemento.ocr_confidence,
+                layout_confidence: elemento.layout_confidence,
+                suspected_header: false,
+                suspected_footer: false,
+                table: None,
+                image_crop: None,
+                style: estilo_celda,
+            };
+            agregar_texto_pdf(pagina, &caja, operaciones);
+        }
+    }
+}
+
+fn agregar_separador_pdf(
+    pagina: &crate::domain::PageBlueprint,
+    elemento: &ElementBlueprint,
+    operaciones: &mut Vec<lopdf::content::Operation>,
+) {
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let width_pt = px_a_pt(elemento.bounding_box.width);
+    let pagina_alto_pt = px_a_pt(pagina.dimensions.height);
+    let y = pagina_alto_pt - y_pt - 1.0;
+
+    operaciones.push(lopdf::content::Operation::new("q", vec![]));
+    operaciones.push(lopdf::content::Operation::new("w", vec![1.into()]));
+    operaciones.push(lopdf::content::Operation::new(
+        "m",
+        vec![
+            lopdf::Object::Real(x_pt as f32),
+            lopdf::Object::Real(y as f32),
+        ],
+    ));
+    operaciones.push(lopdf::content::Operation::new(
+        "l",
+        vec![
+            lopdf::Object::Real((x_pt + width_pt) as f32),
+            lopdf::Object::Real(y as f32),
+        ],
+    ));
+    operaciones.push(lopdf::content::Operation::new("S", vec![]));
+    operaciones.push(lopdf::content::Operation::new("Q", vec![]));
+}
+
+fn envolver_texto_para_pdf(texto: &str, ancho_pt: f64, font_size: f64) -> Vec<String> {
+    let texto = texto.trim();
+    if texto.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lineas = Vec::new();
+    for parrafo in texto.lines() {
+        let mut actual = String::new();
+        for palabra in parrafo.split_whitespace() {
+            let candidato = if actual.is_empty() {
+                palabra.to_string()
+            } else {
+                format!("{actual} {palabra}")
+            };
+
+            if estimar_ancho_linea_pdf(&candidato, font_size) <= ancho_pt || actual.is_empty() {
+                actual = candidato;
+            } else {
+                lineas.push(actual);
+                actual = palabra.to_string();
+            }
+        }
+
+        if !actual.is_empty() {
+            lineas.push(actual);
+        }
+        if parrafo.is_empty() {
+            lineas.push(String::new());
+        }
+    }
+
+    lineas
+}
+
+fn estimar_ancho_linea_pdf(texto: &str, font_size: f64) -> f64 {
+    texto.chars().map(ancho_glifo_helvetica).sum::<f64>() * (font_size / HELVETICA_UNIDADES_POR_EM)
+}
+
+fn ancho_glifo_helvetica(caracter: char) -> f64 {
+    let codigo = caracter as u32;
+    if (32..=126).contains(&codigo) {
+        let indice = (codigo - 32) as usize;
+        HELVETICA_GLYPH_WIDTHS_ASCII[indice] as f64
+    } else {
+        HELVETICA_GLYPH_WIDTH_FALLBACK as f64
+    }
+}
+
+fn objeto_texto_pdf_helvetica(texto: &str) -> lopdf::Object {
+    lopdf::Object::String(
+        codificar_texto_pdf_helvetica(texto),
+        lopdf::StringFormat::Hexadecimal,
+    )
+}
+
+fn codificar_texto_pdf_helvetica(texto: &str) -> Vec<u8> {
+    texto
+        .chars()
+        .flat_map(codificar_caracter_pdf_helvetica)
+        .collect()
+}
+
+fn codificar_caracter_pdf_helvetica(caracter: char) -> Vec<u8> {
+    let original = caracter.to_string();
+    if let Some(bytes) = codificar_winansi_sin_reemplazo(&original) {
+        return bytes;
+    }
+
+    let ascii_aproximado = original
+        .nfd()
+        .filter(|c| !is_combining_mark(*c))
+        .collect::<String>();
+    if let Some(bytes) = codificar_winansi_sin_reemplazo(&ascii_aproximado) {
+        return bytes;
+    }
+
+    vec![b'?']
+}
+
+fn codificar_winansi_sin_reemplazo(texto: &str) -> Option<Vec<u8>> {
+    let (bytes, _, tuvo_reemplazos) = WINDOWS_1252.encode(texto);
+    if tuvo_reemplazos {
+        None
+    } else {
+        Some(bytes.into_owned())
+    }
+}
+
+fn crear_xobject_imagen_pdf(
+    doc: &mut lopdf::Document,
+    datos_imagen: &[u8],
+) -> Result<(lopdf::ObjectId, String), String> {
+    let imagen_dyn =
+        image::load_from_memory(datos_imagen).map_err(|e| format!("Decodificacion: {e}"))?;
+    let rgb = imagen_dyn.to_rgb8();
+    let (ancho, alto) = rgb.dimensions();
+    let mut jpeg = Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, PDF_IMAGE_JPEG_QUALITY)
+        .encode(&rgb, ancho, alto, image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("Codificacion JPEG: {e}"))?;
+
+    let img_dict = lopdf::dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => ancho as i64,
+        "Height" => alto as i64,
+        "ColorSpace" => "DeviceRGB",
+        "BitsPerComponent" => 8,
+        "Filter" => "DCTDecode",
+    };
+
+    let img_stream = lopdf::Stream::new(img_dict, jpeg.into_inner());
+    let xobj_id = doc.add_object(img_stream);
+    Ok((xobj_id, format!("Im{}", xobj_id.0)))
+}
+
+fn construir_plan_latex_semantico(
+    job: &Job,
+    blueprint: &crate::domain::DocumentBlueprint,
+    nombre_directorio_assets: &str,
+) -> Result<LatexExportPlan, ExportError> {
+    let mut body = Vec::new();
+    let mut assets = Vec::new();
+
+    for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+        let elementos_visibles: Vec<&ElementBlueprint> = pagina
+            .elements
+            .iter()
+            .filter(|elemento| !elemento.suspected_header && !elemento.suspected_footer)
+            .collect();
+        let body_len_inicial = body.len();
+        let mut indice = 0usize;
+
+        while indice < elementos_visibles.len() {
+            let elemento = elementos_visibles[indice];
+            match elemento.role {
+                ElementRole::Title => {
+                    let titulo = elemento.text.trim();
+                    if !titulo.is_empty() {
+                        body.push(LatexNode::Section {
+                            title: titulo.to_string(),
+                            numbered: false,
+                        });
+                    }
+                    indice += 1;
+                }
+                ElementRole::ListItem => {
+                    let mut items = Vec::new();
+                    while indice < elementos_visibles.len()
+                        && elementos_visibles[indice].role == ElementRole::ListItem
+                    {
+                        let texto = elementos_visibles[indice].text.trim();
+                        if !texto.is_empty() {
+                            items.push(texto.to_string());
+                        }
+                        indice += 1;
+                    }
+                    if !items.is_empty() {
+                        body.push(LatexNode::Itemize(items));
+                    }
+                }
+                ElementRole::Table => {
+                    if let Some(ref tabla) = elemento.table {
+                        body.push(LatexNode::Table(LatexTable {
+                            table: tabla.clone(),
+                            width_pt: px_a_pt(elemento.bounding_box.width),
+                        }));
+                    } else if let Some(parrafo) = construir_parrafo_latex(elemento) {
+                        body.push(LatexNode::Paragraph(parrafo));
+                    }
+                    indice += 1;
+                }
+                ElementRole::Figure
+                | ElementRole::Signature
+                | ElementRole::Stamp
+                | ElementRole::Formula => {
+                    if let Some(imagen) = construir_imagen_latex(
+                        job,
+                        elemento,
+                        &format!("page{}_element{}.png", pagina.number, indice + 1),
+                        nombre_directorio_assets,
+                        &mut assets,
+                    )? {
+                        body.push(LatexNode::Figure(imagen));
+                    } else if let Some(parrafo) = construir_parrafo_latex(elemento) {
+                        body.push(LatexNode::Paragraph(parrafo));
+                    }
+                    indice += 1;
+                }
+                ElementRole::Separator => {
+                    indice += 1;
+                }
+                _ => {
+                    if let Some(parrafo) = construir_parrafo_latex(elemento) {
+                        body.push(LatexNode::Paragraph(parrafo));
+                    }
+                    indice += 1;
+                }
+            }
+        }
+
+        if indice_pagina + 1 < blueprint.pages.len() && body.len() > body_len_inicial {
+            body.push(LatexNode::PageBreak);
+        }
+    }
+
+    Ok(LatexExportPlan {
+        document: LatexDocument {
+            document_class: "article".to_string(),
+            packages: vec![
+                LatexPackage {
+                    name: "geometry".to_string(),
+                    options: vec!["margin=72pt".to_string()],
+                },
+                LatexPackage {
+                    name: "graphicx".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "array".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "longtable".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "ragged2e".to_string(),
+                    options: Vec::new(),
+                },
+            ],
+            preamble: vec![
+                "\\setlength{\\parindent}{0pt}".to_string(),
+                "\\setlength{\\parskip}{0.6em}".to_string(),
+                "\\raggedbottom".to_string(),
+            ],
+            body,
+        },
+        assets,
+    })
+}
+
+fn construir_plan_latex_facsimil(
+    job: &Job,
+    blueprint: &crate::domain::DocumentBlueprint,
+    nombre_directorio_assets: &str,
+) -> Result<LatexExportPlan, ExportError> {
+    let primera_pagina = blueprint
+        .pages
+        .first()
+        .ok_or_else(|| ExportError::SerializationError("Documento sin páginas".to_string()))?;
+
+    let mut body = Vec::new();
+    let mut assets = Vec::new();
+    for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+        for (indice_elemento, elemento) in pagina.elements.iter().enumerate() {
+            let nombre_asset = format!("page{}_element{}.png", pagina.number, indice_elemento + 1);
+            body.push(construir_nodo_latex_facsimil(
+                job,
+                pagina.number,
+                elemento,
+                &nombre_asset,
+                nombre_directorio_assets,
+                &mut assets,
+            )?);
+        }
+        if indice_pagina + 1 < blueprint.pages.len() {
+            body.push(LatexNode::PageBreak);
+        }
+    }
+
+    Ok(LatexExportPlan {
+        document: LatexDocument {
+            document_class: "article".to_string(),
+            packages: vec![
+                LatexPackage {
+                    name: "geometry".to_string(),
+                    options: vec![format!(
+                        "paperwidth={:.2}pt,paperheight={:.2}pt,margin=0pt",
+                        px_a_pt(primera_pagina.dimensions.width),
+                        px_a_pt(primera_pagina.dimensions.height)
+                    )],
+                },
+                LatexPackage {
+                    name: "textpos".to_string(),
+                    options: vec!["absolute".to_string(), "overlay".to_string()],
+                },
+                LatexPackage {
+                    name: "graphicx".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "array".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "longtable".to_string(),
+                    options: Vec::new(),
+                },
+                LatexPackage {
+                    name: "ragged2e".to_string(),
+                    options: Vec::new(),
+                },
+            ],
+            preamble: vec![
+                "\\pagestyle{empty}".to_string(),
+                "\\setlength{\\TPHorizModule}{1pt}".to_string(),
+                "\\setlength{\\TPVertModule}{1pt}".to_string(),
+                "\\setlength{\\parindent}{0pt}".to_string(),
+            ],
+            body,
+        },
+        assets,
+    })
+}
+
+fn construir_plan_latex_visual_preservation(
+    job: &Job,
+    blueprint: &crate::domain::DocumentBlueprint,
+    nombre_directorio_assets: &str,
+) -> Result<LatexExportPlan, ExportError> {
+    let primera_pagina = blueprint
+        .pages
+        .first()
+        .ok_or_else(|| ExportError::SerializationError("Documento sin páginas".to_string()))?;
+    let mut body = Vec::new();
+    let mut assets = Vec::new();
+
+    for (indice_pagina, pagina) in blueprint.pages.iter().enumerate() {
+        if let Some(imagen) = construir_imagen_latex_pagina_completa(
+            job,
+            pagina.number,
+            &format!("page{}_full.png", pagina.number),
+            nombre_directorio_assets,
+            &mut assets,
+        )? {
+            body.push(LatexNode::PositionedBlock(LatexTextBlock {
+                width_pt: px_a_pt(pagina.dimensions.width),
+                x_pt: 0.0,
+                y_pt: 0.0,
+                content: LatexContent::Image(imagen),
+            }));
+        }
+
+        if indice_pagina + 1 < blueprint.pages.len() {
+            body.push(LatexNode::PageBreak);
+        }
+    }
+
+    Ok(LatexExportPlan {
+        document: LatexDocument {
+            document_class: "article".to_string(),
+            packages: vec![
+                LatexPackage {
+                    name: "geometry".to_string(),
+                    options: vec![format!(
+                        "paperwidth={:.2}pt,paperheight={:.2}pt,margin=0pt",
+                        px_a_pt(primera_pagina.dimensions.width),
+                        px_a_pt(primera_pagina.dimensions.height)
+                    )],
+                },
+                LatexPackage {
+                    name: "textpos".to_string(),
+                    options: vec!["absolute".to_string(), "overlay".to_string()],
+                },
+                LatexPackage {
+                    name: "graphicx".to_string(),
+                    options: Vec::new(),
+                },
+            ],
+            preamble: vec![
+                "\\pagestyle{empty}".to_string(),
+                "\\setlength{\\TPHorizModule}{1pt}".to_string(),
+                "\\setlength{\\TPVertModule}{1pt}".to_string(),
+                "\\setlength{\\parindent}{0pt}".to_string(),
+            ],
+            body,
+        },
+        assets,
+    })
+}
+
+fn construir_nodo_latex_facsimil(
+    job: &Job,
+    numero_pagina: u32,
+    elemento: &ElementBlueprint,
+    nombre_asset: &str,
+    nombre_directorio_assets: &str,
+    assets: &mut Vec<LatexAsset>,
+) -> Result<LatexNode, ExportError> {
+    let x_pt = px_a_pt(elemento.bounding_box.x);
+    let y_pt = px_a_pt(elemento.bounding_box.y);
+    let width_pt = px_a_pt(elemento.bounding_box.width);
+
+    let content = match elemento.role {
+        ElementRole::Figure | ElementRole::Signature | ElementRole::Stamp => {
+            if let Some(imagen) = construir_imagen_latex(
+                job,
+                elemento,
+                nombre_asset,
+                nombre_directorio_assets,
+                assets,
+            )? {
+                LatexContent::Image(imagen)
+            } else {
+                LatexContent::FallbackBox("Imagen no disponible en memoria".to_string())
+            }
+        }
+        ElementRole::Formula if elemento.style.preserve_positioning => {
+            if let Some(imagen) = construir_imagen_latex_desde_bbox(
+                job,
+                numero_pagina,
+                &elemento.bounding_box,
+                nombre_asset,
+                nombre_directorio_assets,
+                assets,
+            )? {
+                LatexContent::Image(imagen)
+            } else {
+                LatexContent::FallbackBox("Formula no disponible en memoria".to_string())
+            }
+        }
+        _ if debe_preservarse_como_imagen_en_latex_facsimil(elemento) => {
+            if let Some(imagen) = construir_imagen_latex_desde_bbox(
+                job,
+                numero_pagina,
+                &elemento.bounding_box,
+                nombre_asset,
+                nombre_directorio_assets,
+                assets,
+            )? {
+                LatexContent::Image(imagen)
+            } else {
+                LatexContent::Paragraph(LatexParagraph {
+                    text: elemento.text.clone(),
+                    alignment: elemento.style.alignment,
+                    emphasis: elemento.style.emphasis,
+                    font_scale: elemento.style.font_scale,
+                })
+            }
+        }
+        ElementRole::Table => {
+            if let Some(ref tabla) = elemento.table {
+                LatexContent::Table(LatexTable {
+                    table: tabla.clone(),
+                    width_pt,
+                })
+            } else {
+                LatexContent::Paragraph(LatexParagraph {
+                    text: elemento.text.clone(),
+                    alignment: elemento.style.alignment,
+                    emphasis: elemento.style.emphasis,
+                    font_scale: elemento.style.font_scale,
+                })
+            }
+        }
+        _ => LatexContent::Paragraph(LatexParagraph {
+            text: elemento.text.clone(),
+            alignment: elemento.style.alignment,
+            emphasis: elemento.style.emphasis,
+            font_scale: elemento.style.font_scale,
+        }),
+    };
+
+    Ok(LatexNode::PositionedBlock(LatexTextBlock {
+        width_pt,
+        x_pt,
+        y_pt,
+        content,
+    }))
+}
+
+fn debe_preservarse_como_imagen_en_latex_facsimil(elemento: &ElementBlueprint) -> bool {
+    matches!(
+        elemento.role,
+        ElementRole::Title
+            | ElementRole::Paragraph
+            | ElementRole::Table
+            | ElementRole::Formula
+            | ElementRole::ListItem
+            | ElementRole::Unknown
+    ) && elemento
+        .ocr_confidence
+        .is_some_and(|valor| valor < LATEX_FACSIMILE_OCR_CONFIDENCE_THRESHOLD)
+}
+
+fn construir_parrafo_latex(elemento: &ElementBlueprint) -> Option<LatexParagraph> {
+    let texto = elemento.text.trim();
+    if texto.is_empty() {
+        return None;
+    }
+
+    Some(LatexParagraph {
+        text: texto.to_string(),
+        alignment: elemento.style.alignment,
+        emphasis: elemento.style.emphasis,
+        font_scale: elemento.style.font_scale,
+    })
+}
+
+fn construir_imagen_latex(
+    job: &Job,
+    elemento: &ElementBlueprint,
+    nombre_asset: &str,
+    nombre_directorio_assets: &str,
+    assets: &mut Vec<LatexAsset>,
+) -> Result<Option<LatexImage>, ExportError> {
+    let Some(ref imagen) = elemento.image_crop else {
+        return Ok(None);
+    };
+
+    construir_imagen_latex_desde_bbox(
+        job,
+        imagen.page_number,
+        &imagen.bounding_box,
+        nombre_asset,
+        nombre_directorio_assets,
+        assets,
+    )
+}
+
+fn construir_imagen_latex_desde_bbox(
+    job: &Job,
+    numero_pagina: u32,
+    bounding_box: &Rectangle,
+    nombre_asset: &str,
+    nombre_directorio_assets: &str,
+    assets: &mut Vec<LatexAsset>,
+) -> Result<Option<LatexImage>, ExportError> {
+    match recortar_imagen_desde_referencia(job, numero_pagina, bounding_box) {
+        Ok(bytes) => {
+            assets.push(LatexAsset {
+                file_name: nombre_asset.to_string(),
+                bytes,
+            });
+            Ok(Some(LatexImage {
+                relative_path: format!("{}/{}", nombre_directorio_assets, nombre_asset),
+                width_pt: px_a_pt(bounding_box.width),
+                height_pt: px_a_pt(bounding_box.height),
+            }))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn construir_imagen_latex_pagina_completa(
+    job: &Job,
+    numero_pagina: u32,
+    nombre_asset: &str,
+    nombre_directorio_assets: &str,
+    assets: &mut Vec<LatexAsset>,
+) -> Result<Option<LatexImage>, ExportError> {
+    let pagina = obtener_pagina(job, numero_pagina)?;
+    let Some(bytes) = pagina.image_data.as_ref() else {
+        return Ok(None);
+    };
+
+    assets.push(LatexAsset {
+        file_name: nombre_asset.to_string(),
+        bytes: bytes.clone(),
     });
-    bloques
+    Ok(Some(LatexImage {
+        relative_path: format!("{}/{}", nombre_directorio_assets, nombre_asset),
+        width_pt: px_a_pt(pagina.dimensions.width),
+        height_pt: px_a_pt(pagina.dimensions.height),
+    }))
+}
+
+fn alignment_hint_from_table(alignment: TableCellAlignment) -> AlignmentHint {
+    match alignment {
+        TableCellAlignment::Left => AlignmentHint::Left,
+        TableCellAlignment::Center => AlignmentHint::Center,
+        TableCellAlignment::Right => AlignmentHint::Right,
+    }
+}
+
+#[cfg(test)]
+mod pdf_metric_tests {
+    use super::{envolver_texto_para_pdf, estimar_ancho_linea_pdf};
+
+    #[test]
+    fn test_pdf_glyph_metrics_distingue_glifos_estrechos_y_anchos() {
+        let ancho_estrecho = estimar_ancho_linea_pdf("iiiii", 12.0);
+        let ancho_ancho = estimar_ancho_linea_pdf("WWWWW", 12.0);
+
+        assert!(
+            ancho_ancho > ancho_estrecho,
+            "Helvetica debe estimar mas ancho para W que para i"
+        );
+    }
+
+    #[test]
+    fn test_pdf_wrapping_usa_metricas_reales_de_glifos() {
+        let ancho_referencia = estimar_ancho_linea_pdf("iiiii iiiii", 12.0) + 0.5;
+        let lineas_estrechas = envolver_texto_para_pdf("iiiii iiiii", ancho_referencia, 12.0);
+        let lineas_anchas = envolver_texto_para_pdf("WWWWW WWWWW", ancho_referencia, 12.0);
+
+        assert_eq!(
+            lineas_estrechas.len(),
+            1,
+            "Dos palabras estrechas deben caber en el ancho de referencia"
+        );
+        assert_eq!(
+            lineas_anchas.len(),
+            2,
+            "El mismo ancho no debe acomodar dos palabras anchas"
+        );
+    }
 }

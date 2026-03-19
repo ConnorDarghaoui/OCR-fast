@@ -49,6 +49,7 @@ mod domain_tests {
             },
             content: "Hola mundo".to_string(),
             confidence: 0.95,
+            layout_confidence: None,
             embedded_image: None,
             table_structure: None,
             reading_order: 0,
@@ -148,6 +149,7 @@ mod infrastructure_tests {
                     },
                     content: "Test".to_string(),
                     confidence: 1.0,
+                    layout_confidence: None,
                     embedded_image: None,
                     table_structure: None,
                     reading_order: 0,
@@ -369,6 +371,7 @@ mod postprocessor_tests {
                     },
                     content: contenido.to_string(),
                     confidence: 0.9,
+                    layout_confidence: None,
                     embedded_image: None,
                     table_structure: None,
                     reading_order: 0,
@@ -430,20 +433,56 @@ mod postprocessor_tests {
 
 #[cfg(test)]
 mod exporter_tests {
+    use encoding_rs::WINDOWS_1252;
     use ocrfast::domain::{
         Block, BlockType, Dimensions, Document, Job, JobStatus, Page, ProcessingProfile, Rectangle,
-        TableCell, TableStructure,
+        TableCell, TableCellAlignment, TableCellStyle, TableStructure,
     };
     use ocrfast::infrastructure::document_assemblers::LayoutGuidedDocumentAssembler;
-    use ocrfast::infrastructure::exporters::{JsonExporter, MarkdownExporter};
+    use ocrfast::infrastructure::exporters::{
+        JsonExporter, LatexExporter, PdfReconstructedExporter, TxtExporter,
+    };
+    #[cfg(feature = "latex_compiler_validation")]
+    use ocrfast::infrastructure::exporters::{
+        LatexCompilerValidator, OCRFAST_RUN_TECTONIC_TESTS_ENV,
+    };
     use ocrfast::interfaces::ports::{DocumentAssemblerPort, ExporterPort};
     use std::collections::HashMap;
+
+    fn png_color_sintetico(ancho: u32, alto: u32, color: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(ancho, alto, image::Rgb(color));
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+        buffer.into_inner()
+    }
+
+    #[cfg(feature = "latex_compiler_validation")]
+    fn validador_latex_para_tests() -> Option<LatexCompilerValidator> {
+        if !LatexCompilerValidator::tests_enabled() {
+            eprintln!(
+                "saltando validacion tectonic: exporta {}=1 para activar la compilacion real",
+                OCRFAST_RUN_TECTONIC_TESTS_ENV
+            );
+            return None;
+        }
+
+        let Some(validador) = LatexCompilerValidator::discover() else {
+            eprintln!("saltando validacion tectonic: no se encontro binario tectonic");
+            return None;
+        };
+
+        Some(validador)
+    }
 
     fn job_con_tabla(con_estructura: bool) -> Job {
         let tabla = if con_estructura {
             Some(TableStructure {
                 num_rows: 2,
                 num_cols: 2,
+                header_row_indices: vec![0],
+                column_widths: vec![140, 80],
                 rows: vec![
                     vec![
                         TableCell {
@@ -456,6 +495,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Center,
+                                is_emphasized: true,
+                            }),
                         },
                         TableCell {
                             content: "Edad".to_string(),
@@ -467,6 +510,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Center,
+                                is_emphasized: true,
+                            }),
                         },
                     ],
                     vec![
@@ -480,6 +527,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Left,
+                                is_emphasized: false,
+                            }),
                         },
                         TableCell {
                             content: "30".to_string(),
@@ -491,6 +542,10 @@ mod exporter_tests {
                                 width: 100,
                                 height: 20,
                             },
+                            style: Some(TableCellStyle {
+                                alignment: TableCellAlignment::Right,
+                                is_emphasized: false,
+                            }),
                         },
                     ],
                 ],
@@ -508,21 +563,54 @@ mod exporter_tests {
                     width: 300,
                     height: 200,
                 },
-                image_data: None,
-                blocks: vec![Block {
-                    block_type: BlockType::Table,
-                    bounding_box: Rectangle {
-                        x: 0,
-                        y: 0,
-                        width: 300,
-                        height: 100,
+                image_data: Some(png_color_sintetico(300, 200, [240, 240, 240])),
+                blocks: vec![
+                    Block {
+                        block_type: BlockType::Title,
+                        bounding_box: Rectangle {
+                            x: 20,
+                            y: 10,
+                            width: 260,
+                            height: 30,
+                        },
+                        content: "Informe".to_string(),
+                        confidence: 0.98,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
                     },
-                    content: "Nombre | Edad\nAna | 30".to_string(),
-                    confidence: 0.9,
-                    embedded_image: None,
-                    table_structure: tabla,
-                    reading_order: 0,
-                }],
+                    Block {
+                        block_type: BlockType::Table,
+                        bounding_box: Rectangle {
+                            x: 0,
+                            y: 50,
+                            width: 300,
+                            height: 100,
+                        },
+                        content: "Nombre | Edad\nAna | 30".to_string(),
+                        confidence: 0.9,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: tabla,
+                        reading_order: 1,
+                    },
+                    Block {
+                        block_type: BlockType::Image,
+                        bounding_box: Rectangle {
+                            x: 40,
+                            y: 155,
+                            width: 80,
+                            height: 35,
+                        },
+                        content: String::new(),
+                        confidence: 0.95,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 2,
+                    },
+                ],
             }],
             metadata: HashMap::new(),
         };
@@ -539,49 +627,1067 @@ mod exporter_tests {
         }
     }
 
-    #[test]
-    fn test_markdown_tabla_con_estructura_usa_to_markdown() {
-        let dir = std::env::temp_dir().join("ocrfast_exp_test_md");
-        std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join("output.md");
+    fn job_latex_semantico() -> Job {
+        let tabla = Some(TableStructure {
+            num_rows: 2,
+            num_cols: 2,
+            header_row_indices: vec![0],
+            column_widths: vec![180, 220],
+            rows: vec![
+                vec![
+                    TableCell {
+                        content: "Seccion".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 0,
+                            y: 0,
+                            width: 180,
+                            height: 30,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Center,
+                            is_emphasized: true,
+                        }),
+                    },
+                    TableCell {
+                        content: "Contenido".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 180,
+                            y: 0,
+                            width: 220,
+                            height: 30,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Center,
+                            is_emphasized: true,
+                        }),
+                    },
+                ],
+                vec![
+                    TableCell {
+                        content: "Resumen".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 0,
+                            y: 30,
+                            width: 180,
+                            height: 32,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Left,
+                            is_emphasized: false,
+                        }),
+                    },
+                    TableCell {
+                        content: "Tabla semantica lista para exportar".to_string(),
+                        row_span: 1,
+                        col_span: 1,
+                        bounding_box: Rectangle {
+                            x: 180,
+                            y: 30,
+                            width: 220,
+                            height: 32,
+                        },
+                        style: Some(TableCellStyle {
+                            alignment: TableCellAlignment::Left,
+                            is_emphasized: false,
+                        }),
+                    },
+                ],
+            ],
+        });
 
-        let exporter = MarkdownExporter::new();
+        Job {
+            id: "job-latex-sem".to_string(),
+            document: Document {
+                id: "exp-latex-sem".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/latex-sem.pdf"),
+                pages: vec![
+                    Page {
+                        number: 1,
+                        dimensions: Dimensions {
+                            width: 1200,
+                            height: 1600,
+                        },
+                        image_data: Some(png_color_sintetico(1200, 1600, [251, 251, 245])),
+                        blocks: vec![
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 120,
+                                    y: 24,
+                                    width: 960,
+                                    height: 32,
+                                },
+                                content: "Encabezado repetido del libro".to_string(),
+                                confidence: 0.99,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 0,
+                            },
+                            Block {
+                                block_type: BlockType::Title,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 120,
+                                    width: 920,
+                                    height: 64,
+                                },
+                                content: "Capitulo del libro".to_string(),
+                                confidence: 0.98,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 1,
+                            },
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 240,
+                                    width: 900,
+                                    height: 180,
+                                },
+                                content: "Primer parrafo del documento reconstruido.".to_string(),
+                                confidence: 0.96,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 2,
+                            },
+                        ],
+                    },
+                    Page {
+                        number: 2,
+                        dimensions: Dimensions {
+                            width: 1200,
+                            height: 1600,
+                        },
+                        image_data: Some(png_color_sintetico(1200, 1600, [252, 252, 246])),
+                        blocks: vec![
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 120,
+                                    y: 24,
+                                    width: 960,
+                                    height: 32,
+                                },
+                                content: "Encabezado repetido del libro".to_string(),
+                                confidence: 0.99,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 0,
+                            },
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 140,
+                                    width: 920,
+                                    height: 160,
+                                },
+                                content: "Segundo parrafo del documento reconstruido.".to_string(),
+                                confidence: 0.95,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 1,
+                            },
+                            Block {
+                                block_type: BlockType::Table,
+                                bounding_box: Rectangle {
+                                    x: 140,
+                                    y: 360,
+                                    width: 760,
+                                    height: 180,
+                                },
+                                content: "Seccion | Contenido\nResumen | Tabla semantica lista para exportar"
+                                    .to_string(),
+                                confidence: 0.93,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: tabla.clone(),
+                                reading_order: 2,
+                            },
+                        ],
+                    },
+                    Page {
+                        number: 3,
+                        dimensions: Dimensions {
+                            width: 1200,
+                            height: 1600,
+                        },
+                        image_data: Some(png_color_sintetico(1200, 1600, [245, 248, 252])),
+                        blocks: vec![
+                            Block {
+                                block_type: BlockType::Text,
+                                bounding_box: Rectangle {
+                                    x: 120,
+                                    y: 24,
+                                    width: 960,
+                                    height: 32,
+                                },
+                                content: "Encabezado repetido del libro".to_string(),
+                                confidence: 0.99,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 0,
+                            },
+                            Block {
+                                block_type: BlockType::Image,
+                                bounding_box: Rectangle {
+                                    x: 220,
+                                    y: 180,
+                                    width: 420,
+                                    height: 260,
+                                },
+                                content: String::new(),
+                                confidence: 0.97,
+                                layout_confidence: None,
+                                embedded_image: None,
+                                table_structure: None,
+                                reading_order: 1,
+                            },
+                        ],
+                    },
+                ],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
+    fn job_latex_facsimil() -> Job {
+        let mut img = image::RgbImage::from_pixel(1200, 1600, image::Rgb([248, 248, 244]));
+        for y in 180..430 {
+            for x in 720..1020 {
+                img.put_pixel(x, y, image::Rgb([210, 225, 245]));
+            }
+        }
+        for y in 520..700 {
+            for x in 140..520 {
+                img.put_pixel(x, y, image::Rgb([245, 215, 200]));
+            }
+        }
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+
+        Job {
+            id: "job-latex-fac".to_string(),
+            document: Document {
+                id: "exp-latex-fac".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/latex-fac.pdf"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 1200,
+                        height: 1600,
+                    },
+                    image_data: Some(buffer.into_inner()),
+                    blocks: vec![
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 24,
+                                width: 960,
+                                height: 32,
+                            },
+                            content: "Encabezado repetido del libro".to_string(),
+                            confidence: 0.99,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 0,
+                        },
+                        Block {
+                            block_type: BlockType::Title,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 120,
+                                width: 960,
+                                height: 70,
+                            },
+                            content: "Titulo original".to_string(),
+                            confidence: 0.98,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 1,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 120,
+                                y: 240,
+                                width: 380,
+                                height: 150,
+                            },
+                            content: "columna izquierda uno".to_string(),
+                            confidence: 0.95,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 2,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 700,
+                                y: 240,
+                                width: 320,
+                                height: 170,
+                            },
+                            content: "columna derecha dudosa".to_string(),
+                            confidence: 0.43,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 3,
+                        },
+                        Block {
+                            block_type: BlockType::Image,
+                            bounding_box: Rectangle {
+                                x: 140,
+                                y: 520,
+                                width: 380,
+                                height: 180,
+                            },
+                            content: String::new(),
+                            confidence: 0.97,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 4,
+                        },
+                    ],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
+    fn job_texto_acentuado() -> Job {
+        Job {
+            id: "job-acentos".to_string(),
+            document: Document {
+                id: "exp-acentos".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/acentos.png"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 1200,
+                        height: 400,
+                    },
+                    image_data: Some(png_color_sintetico(1200, 400, [255, 255, 255])),
+                    blocks: vec![Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 80,
+                            y: 80,
+                            width: 1000,
+                            height: 80,
+                        },
+                        content: "Canción año útil Ñandú".to_string(),
+                        confidence: 0.97,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
+                    }],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
+    fn job_pdf_fallback_confianza() -> Job {
+        let mut img = image::RgbImage::from_pixel(800, 500, image::Rgb([255, 255, 255]));
+        for y in 60..170 {
+            for x in 60..360 {
+                img.put_pixel(x, y, image::Rgb([240, 120, 120]));
+            }
+        }
+        for y in 260..360 {
+            for x in 60..420 {
+                img.put_pixel(x, y, image::Rgb([180, 220, 255]));
+            }
+        }
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+
+        Job {
+            id: "job-pdf-fallback".to_string(),
+            document: Document {
+                id: "exp-pdf-fallback".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/fallback.png"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 800,
+                        height: 500,
+                    },
+                    image_data: Some(buffer.into_inner()),
+                    blocks: vec![
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 60,
+                                y: 60,
+                                width: 300,
+                                height: 110,
+                            },
+                            content: "texto dudoso".to_string(),
+                            confidence: 0.41,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 0,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 60,
+                                y: 260,
+                                width: 360,
+                                height: 100,
+                            },
+                            content: "texto claro".to_string(),
+                            confidence: 0.96,
+                            layout_confidence: None,
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 1,
+                        },
+                    ],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
+    fn job_captura_marketplace_visual() -> Job {
+        let mut img = image::RgbImage::from_pixel(1440, 1800, image::Rgb([250, 250, 250]));
+        for y in 220..900 {
+            for x in 60..680 {
+                img.put_pixel(x, y, image::Rgb([220, 230, 245]));
+            }
+        }
+        for y in 250..320 {
+            for x in 760..1180 {
+                img.put_pixel(x, y, image::Rgb([255, 245, 210]));
+            }
+        }
+        for y in 370..460 {
+            for x in 760..1260 {
+                img.put_pixel(x, y, image::Rgb([210, 255, 220]));
+            }
+        }
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+
+        Job {
+            id: "job-captura-marketplace".to_string(),
+            document: Document {
+                id: "exp-captura-marketplace".to_string(),
+                source_path: std::path::PathBuf::from("/tmp/captura-ebay.png"),
+                pages: vec![Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 1440,
+                        height: 1800,
+                    },
+                    image_data: Some(buffer.into_inner()),
+                    blocks: vec![
+                        Block {
+                            block_type: BlockType::Image,
+                            bounding_box: Rectangle {
+                                x: 60,
+                                y: 220,
+                                width: 620,
+                                height: 680,
+                            },
+                            content: String::new(),
+                            confidence: 0.97,
+                            layout_confidence: Some(0.92),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 0,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 760,
+                                y: 250,
+                                width: 420,
+                                height: 70,
+                            },
+                            content: "Vintage camera listing".to_string(),
+                            confidence: 0.95,
+                            layout_confidence: Some(0.88),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 1,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 760,
+                                y: 370,
+                                width: 500,
+                                height: 90,
+                            },
+                            content: "$129.99 Buy it now".to_string(),
+                            confidence: 0.94,
+                            layout_confidence: Some(0.87),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 2,
+                        },
+                        Block {
+                            block_type: BlockType::Text,
+                            bounding_box: Rectangle {
+                                x: 760,
+                                y: 520,
+                                width: 420,
+                                height: 120,
+                            },
+                            content: "Ships from Panama".to_string(),
+                            confidence: 0.93,
+                            layout_confidence: Some(0.86),
+                            embedded_image: None,
+                            table_structure: None,
+                            reading_order: 3,
+                        },
+                    ],
+                }],
+                metadata: HashMap::new(),
+            },
+            status: JobStatus::Completed,
+            created_at: std::time::SystemTime::now(),
+            completed_at: Some(std::time::SystemTime::now()),
+            profile: ProcessingProfile::Balanced,
+            error_message: None,
+            formato_salida: Default::default(),
+        }
+    }
+
+    #[test]
+    fn test_txt_exporter_tabla_con_estructura_usa_texto_plano() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_txt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.txt");
+
+        let exporter = TxtExporter::new();
         exporter.export(&job_con_tabla(true), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
         assert!(
-            contenido.contains("---"),
-            "Tabla con estructura debe usar formato Markdown con separadores"
+            contenido.contains("Nombre\tEdad"),
+            "La tabla estructurada debe degradarse a texto tabulado"
         );
         assert!(
-            contenido.contains("Nombre"),
-            "Debe contener nombre de columna"
-        );
-        assert!(
-            contenido.contains("Edad"),
-            "Debe contener nombre de columna"
-        );
-        assert!(
-            !contenido.contains("```\n[Tabla]"),
-            "No debe usar el fallback de bloque de codigo antiguo"
+            contenido.contains("ANA") || contenido.contains("Ana"),
+            "El TXT debe incluir el contenido de celdas"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_markdown_tabla_sin_estructura_usa_fallback() {
-        let dir = std::env::temp_dir().join("ocrfast_exp_test_md_fb");
+    fn test_latex_exporter_semantico_genera_fuente_y_assets() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex");
         std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join("output.md");
+        let ruta = dir.join("output.tex");
 
-        let exporter = MarkdownExporter::new();
-        exporter.export(&job_con_tabla(false), &ruta).unwrap();
+        let exporter = LatexExporter::new();
+        exporter.export(&job_latex_semantico(), &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
         assert!(
-            contenido.contains("Nombre | Edad"),
-            "Sin estructura debe exportar el texto plano del bloque"
+            contenido.contains("\\section*{Capitulo del libro}"),
+            "La salida LaTeX semantica debe materializar titulos como secciones"
+        );
+        assert!(
+            contenido.contains("\\includegraphics"),
+            "La salida LaTeX debe preservar figuras del original"
+        );
+        assert!(
+            contenido.contains("\\begin{tabular}"),
+            "La salida LaTeX semantica debe materializar tablas"
+        );
+        assert!(
+            !contenido.contains("Encabezado repetido del libro"),
+            "Los headers sospechosos no deben contaminar el cuerpo semantico"
+        );
+        assert!(
+            !contenido.contains("\\begin{textblock*}"),
+            "La ruta semantica no debe depender de textblock absoluto"
+        );
+
+        let assets = dir.join("output_assets");
+        assert!(
+            assets.exists(),
+            "El exportador debe generar directorio de assets"
+        );
+        assert!(
+            std::fs::read_dir(&assets)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "png")),
+            "La figura recortada debe persistirse como asset externo"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_latex_exporter_facsimil_preserva_geometria_y_fallback_raster() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_fac");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        let exporter = LatexExporter::new_facsimile();
+        exporter.export(&job_latex_facsimil(), &ruta).unwrap();
+
+        let contenido = std::fs::read_to_string(&ruta).unwrap();
+        assert!(
+            contenido.contains("\\begin{textblock*}"),
+            "La salida facsimil debe posicionar bloques absolutos"
+        );
+        assert!(
+            contenido.contains("Encabezado repetido del libro"),
+            "La ruta facsimil debe preservar headers repetidos visibles"
+        );
+        assert!(
+            !contenido.contains("\\section*"),
+            "La ruta facsimil no debe convertir titulos a secciones semanticas"
+        );
+        assert!(
+            contenido.contains("(57.60pt,115.20pt)") && contenido.contains("(336.00pt,115.20pt)"),
+            "La ruta facsimil debe preservar la geometria de columnas"
+        );
+        assert!(
+            !contenido.contains("columna derecha dudosa"),
+            "El texto de baja confianza debe degradarse a recorte raster"
+        );
+        assert!(
+            contenido.matches("\\includegraphics").count() >= 2,
+            "La salida facsimil debe incluir la figura y el fallback raster"
+        );
+
+        let assets = dir.join("output_assets");
+        let cantidad_png = std::fs::read_dir(&assets)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
+            .count();
+        assert!(
+            cantidad_png >= 2,
+            "La ruta facsimil debe persistir assets para figura y fallback raster"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "latex_compiler_validation")]
+    #[test]
+    fn test_latex_exporter_semantico_compila_con_tectonic() {
+        let Some(validador) = validador_latex_para_tests() else {
+            return;
+        };
+
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_compile_sem");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        LatexExporter::new()
+            .export(&job_latex_semantico(), &ruta)
+            .unwrap();
+        let artefactos = validador.compile_tex_file(&ruta).unwrap();
+
+        assert!(
+            artefactos.pdf_path.exists(),
+            "La compilacion tectonic debe producir un PDF semantico"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "latex_compiler_validation")]
+    #[test]
+    fn test_latex_exporter_facsimil_compila_con_tectonic() {
+        let Some(validador) = validador_latex_para_tests() else {
+            return;
+        };
+
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_compile_fac");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        LatexExporter::new_facsimile()
+            .export(&job_latex_facsimil(), &ruta)
+            .unwrap();
+        let artefactos = validador.compile_tex_file(&ruta).unwrap();
+
+        assert!(
+            artefactos.pdf_path.exists(),
+            "La compilacion tectonic debe producir un PDF facsimil"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_genera_pdf_visible_con_xobject() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter.export(&job_con_tabla(true), &ruta).unwrap();
+
+        assert!(ruta.exists(), "El archivo PDF debe existir");
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let paginas = pdf.get_pages();
+        assert_eq!(
+            paginas.len(),
+            1,
+            "La salida de prueba debe tener una pagina"
+        );
+
+        let (&_numero_pagina, &page_id) = paginas
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe poder decodificarse");
+        let contenido_pdf = String::from_utf8_lossy(&contenido);
+        assert!(
+            contenido_pdf.contains(" Tj")
+                || contenido_pdf.contains(" TJ")
+                || contenido_pdf.contains("Tj\n"),
+            "El PDF reconstruido debe contener operaciones de texto visibles"
+        );
+        assert!(
+            !contenido_pdf.contains(" Tr "),
+            "El PDF reconstruido no debe depender de texto invisible"
+        );
+
+        let pagina = pdf
+            .get_dictionary(page_id)
+            .expect("La pagina debe exponer su diccionario");
+        let recursos_ref = pagina
+            .get(b"Resources")
+            .expect("La pagina debe tener recursos");
+        let recursos = recursos_ref
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .or_else(|| recursos_ref.as_dict().ok().cloned())
+            .expect("Los recursos de la pagina deben resolverse");
+        let xobjects = recursos
+            .get(b"XObject")
+            .ok()
+            .and_then(|obj| obj.as_dict().ok())
+            .expect("El PDF reconstruido debe registrar al menos un XObject");
+        assert!(
+            !xobjects.is_empty(),
+            "La pagina debe contener el recorte de imagen del original"
+        );
+        let primer_xobject_id = xobjects
+            .iter()
+            .next()
+            .and_then(|(_nombre, objeto)| objeto.as_reference().ok())
+            .expect("El XObject debe resolverse como referencia");
+        let stream = pdf
+            .get_object(primer_xobject_id)
+            .expect("El XObject debe existir")
+            .as_stream()
+            .expect("El XObject debe ser un stream de imagen");
+        assert_eq!(
+            stream
+                .dict
+                .get(b"Filter")
+                .expect("La imagen debe declarar un filtro")
+                .as_name()
+                .expect("El filtro debe ser un nombre"),
+            b"DCTDecode"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_codifica_texto_winansi() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf_unicode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter.export(&job_texto_acentuado(), &ruta).unwrap();
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let paginas = pdf.get_pages();
+        let (&_numero_pagina, &page_id) = paginas
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe leerse");
+        let content = lopdf::content::Content::decode(&contenido)
+            .expect("El content stream debe decodificarse");
+        let texto_operacion = content
+            .operations
+            .iter()
+            .find(|op| op.operator == "Tj")
+            .and_then(|op| op.operands.first())
+            .and_then(|obj| obj.as_str().ok())
+            .expect("Debe existir al menos una operacion Tj con bytes de texto");
+        let (texto_decodificado, _, _) = WINDOWS_1252.decode(texto_operacion);
+        assert_eq!(texto_decodificado, "Canción año útil Ñandú");
+
+        let pagina = pdf
+            .get_dictionary(page_id)
+            .expect("La pagina debe exponer su diccionario");
+        let recursos_ref = pagina
+            .get(b"Resources")
+            .expect("La pagina debe tener recursos");
+        let recursos = recursos_ref
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .or_else(|| recursos_ref.as_dict().ok().cloned())
+            .expect("Los recursos de la pagina deben resolverse");
+        let fuentes = recursos
+            .get(b"Font")
+            .expect("La pagina debe exponer fuentes")
+            .as_dict()
+            .expect("El diccionario de fuentes debe ser directo");
+        let fuente = fuentes
+            .get(b"F1")
+            .expect("La fuente F1 debe existir")
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .expect("La fuente F1 debe resolverse");
+        assert_eq!(
+            fuente
+                .get(b"Encoding")
+                .expect("La fuente debe declarar Encoding")
+                .as_name()
+                .expect("El encoding debe ser un name"),
+            b"WinAnsiEncoding"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_preserva_imagen_en_bloque_de_baja_confianza() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf_confidence_fallback");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter
+            .export(&job_pdf_fallback_confianza(), &ruta)
+            .unwrap();
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let (&_numero_pagina, &page_id) = pdf
+            .get_pages()
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe leerse");
+        let content = lopdf::content::Content::decode(&contenido)
+            .expect("El content stream debe decodificarse");
+
+        let operaciones_do = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Do")
+            .count();
+        assert_eq!(
+            operaciones_do, 1,
+            "Solo el bloque de baja confianza debe degradarse a imagen"
+        );
+
+        let textos: Vec<String> = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Tj")
+            .filter_map(|op| op.operands.first())
+            .filter_map(|obj| obj.as_str().ok())
+            .map(|bytes| WINDOWS_1252.decode(bytes).0.into_owned())
+            .collect();
+        let texto_visible = textos.join(" ");
+        assert!(
+            texto_visible.contains("texto") && texto_visible.contains("claro"),
+            "El bloque de alta confianza debe seguir saliendo como texto visible"
+        );
+        assert!(
+            !texto_visible.contains("dudoso"),
+            "El bloque de baja confianza no debe serializarse como texto PDF"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pdf_reconstructed_exporter_preserva_captura_visual_completa() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_pdf_visual_preservation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.pdf");
+
+        let exporter = PdfReconstructedExporter::new();
+        exporter
+            .export(&job_captura_marketplace_visual(), &ruta)
+            .unwrap();
+
+        let pdf = lopdf::Document::load(&ruta).expect("El PDF generado debe abrirse");
+        let (&_numero_pagina, &page_id) = pdf
+            .get_pages()
+            .iter()
+            .next()
+            .expect("El PDF debe contener una pagina accesible");
+        let contenido = pdf
+            .get_page_content(page_id)
+            .expect("El content stream debe leerse");
+        let content = lopdf::content::Content::decode(&contenido)
+            .expect("El content stream debe decodificarse");
+
+        let operaciones_do = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Do")
+            .count();
+        let operaciones_tr_invisible = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Tr")
+            .count();
+        let textos: Vec<String> = content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Tj")
+            .filter_map(|op| op.operands.first())
+            .filter_map(|obj| obj.as_str().ok())
+            .map(|bytes| WINDOWS_1252.decode(bytes).0.into_owned())
+            .collect();
+        let texto_overlay = textos.join(" ");
+
+        assert_eq!(
+            operaciones_do, 1,
+            "La preservacion visual debe incrustar una sola imagen base de pagina"
+        );
+        assert!(
+            operaciones_tr_invisible >= 1,
+            "La preservacion visual debe superponer texto invisible para busqueda"
+        );
+        assert!(
+            texto_overlay.contains("camera")
+                && texto_overlay.contains("Buy")
+                && texto_overlay.contains("now"),
+            "La preservacion visual debe mantener overlay OCR searchable"
+        );
+
+        let pagina = pdf
+            .get_dictionary(page_id)
+            .expect("La pagina debe exponer su diccionario");
+        let recursos_ref = pagina
+            .get(b"Resources")
+            .expect("La pagina debe tener recursos");
+        let recursos = recursos_ref
+            .as_reference()
+            .ok()
+            .and_then(|id| pdf.get_dictionary(id).ok().cloned())
+            .or_else(|| recursos_ref.as_dict().ok().cloned())
+            .expect("Los recursos de la pagina deben resolverse");
+        let xobjects = recursos
+            .get(b"XObject")
+            .ok()
+            .and_then(|obj| obj.as_dict().ok())
+            .expect("La pagina debe contener un XObject de fondo");
+        assert_eq!(
+            xobjects.len(),
+            1,
+            "La preservacion visual no debe fragmentar la captura en recortes extra"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_latex_exporter_modo_visual_degrada_a_imagen_de_pagina() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_tex_visual_preservation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("output.tex");
+
+        let exporter = LatexExporter::new_facsimile();
+        exporter
+            .export(&job_captura_marketplace_visual(), &ruta)
+            .unwrap();
+
+        let contenido = std::fs::read_to_string(&ruta).unwrap();
+        assert!(
+            contenido.contains("page1\\_full.png"),
+            "La ruta visual debe degradar a asset de pagina completa"
+        );
+        assert!(
+            !contenido.contains("Vintage camera listing"),
+            "La salida LaTeX visual no debe reescribir la captura como parrafos"
+        );
+
+        let assets = dir.join("output_assets");
+        assert!(
+            assets.join("page1_full.png").exists(),
+            "La preservacion visual debe persistir la imagen completa de la pagina"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -606,10 +1712,10 @@ mod exporter_tests {
     }
 
     #[test]
-    fn test_markdown_exporta_en_orden_de_lectura_canonico() {
-        let dir = std::env::temp_dir().join("ocrfast_exp_test_md_order");
+    fn test_txt_exporta_en_orden_de_lectura_canonico() {
+        let dir = std::env::temp_dir().join("ocrfast_exp_test_txt_order");
         std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join("output.md");
+        let ruta = dir.join("output.txt");
 
         let mut job = job_con_tabla(false);
         job.document.pages[0].blocks = vec![
@@ -623,6 +1729,7 @@ mod exporter_tests {
                 },
                 content: "Columna derecha".to_string(),
                 confidence: 0.9,
+                layout_confidence: None,
                 embedded_image: None,
                 table_structure: None,
                 reading_order: 9,
@@ -637,6 +1744,7 @@ mod exporter_tests {
                 },
                 content: "Titulo".to_string(),
                 confidence: 0.95,
+                layout_confidence: None,
                 embedded_image: None,
                 table_structure: None,
                 reading_order: 4,
@@ -651,6 +1759,7 @@ mod exporter_tests {
                 },
                 content: "Columna izquierda".to_string(),
                 confidence: 0.9,
+                layout_confidence: None,
                 embedded_image: None,
                 table_structure: None,
                 reading_order: 7,
@@ -661,11 +1770,11 @@ mod exporter_tests {
             .assemble(&mut job.document)
             .unwrap();
 
-        let exporter = MarkdownExporter::new();
+        let exporter = TxtExporter::new();
         exporter.export(&job, &ruta).unwrap();
 
         let contenido = std::fs::read_to_string(&ruta).unwrap();
-        let indice_titulo = contenido.find("### Titulo").unwrap();
+        let indice_titulo = contenido.find("TITULO").unwrap();
         let indice_izquierda = contenido.find("Columna izquierda").unwrap();
         let indice_derecha = contenido.find("Columna derecha").unwrap();
 
@@ -898,6 +2007,7 @@ mod layout_engine_tests {
             },
             content: "texto previo".to_string(),
             confidence: 0.9,
+            layout_confidence: None,
             embedded_image: None,
             table_structure: None,
             reading_order: 0,

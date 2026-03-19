@@ -583,61 +583,40 @@ impl AppState {
         self.loguear(format!("Trabajo {} eliminado", &id_trabajo[..8]));
     }
 
-    /// Exporta el trabajo seleccionado a Markdown.
-    pub fn exportar_trabajo_markdown(&mut self) {
-        let trabajo = match self.obtener_trabajo_seleccionado() {
-            Some(j) => j.clone(),
-            None => return,
-        };
+    /// Exporta el trabajo seleccionado a texto plano.
+    pub fn exportar_trabajo_txt(&mut self) {
+        self.exportar_trabajo_seleccionado("TXT", "txt");
+    }
 
-        let ruta_base = trabajo.document.source_path.with_extension("md");
-        match self.job_exporter.export_job(&trabajo, &ruta_base) {
-            Ok(_) => {
-                self.loguear(format!("Exportado MD: {}", ruta_base.display()));
-                self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
-            }
-            Err(e) => {
-                self.loguear(format!("Error exportacion MD: {}", e));
-                self.mostrar_estado(format!("Error exportacion: {}", e));
-            }
-        }
+    /// Exporta el trabajo seleccionado a LaTeX.
+    pub fn exportar_trabajo_latex(&mut self) {
+        self.exportar_trabajo_seleccionado("LaTeX", "tex");
     }
 
     /// Exporta el trabajo seleccionado a JSON.
     pub fn exportar_trabajo_json(&mut self) {
-        let trabajo = match self.obtener_trabajo_seleccionado() {
-            Some(j) => j.clone(),
-            None => return,
-        };
-
-        let ruta_base = trabajo.document.source_path.with_extension("json");
-        match self.job_exporter.export_job(&trabajo, &ruta_base) {
-            Ok(_) => {
-                self.loguear(format!("Exportado JSON: {}", ruta_base.display()));
-                self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
-            }
-            Err(e) => {
-                self.loguear(format!("Error exportacion JSON: {}", e));
-                self.mostrar_estado(format!("Error exportacion: {}", e));
-            }
-        }
+        self.exportar_trabajo_seleccionado("JSON", "json");
     }
 
-    /// Exporta el trabajo seleccionado a PDF sandwich.
+    /// Exporta el trabajo seleccionado a PDF reconstruido.
     pub fn exportar_trabajo_pdf(&mut self) {
+        self.exportar_trabajo_seleccionado("PDF", "pdf");
+    }
+
+    fn exportar_trabajo_seleccionado(&mut self, etiqueta: &str, extension: &str) {
         let trabajo = match self.obtener_trabajo_seleccionado() {
             Some(j) => j.clone(),
             None => return,
         };
 
-        let ruta_base = trabajo.document.source_path.with_extension("pdf");
+        let ruta_base = trabajo.document.source_path.with_extension(extension);
         match self.job_exporter.export_job(&trabajo, &ruta_base) {
             Ok(_) => {
-                self.loguear(format!("Exportado PDF: {}", ruta_base.display()));
+                self.loguear(format!("Exportado {etiqueta}: {}", ruta_base.display()));
                 self.mostrar_estado(format!("Exportado: {}", ruta_base.display()));
             }
             Err(e) => {
-                self.loguear(format!("Error exportacion PDF: {}", e));
+                self.loguear(format!("Error exportacion {etiqueta}: {}", e));
                 self.mostrar_estado(format!("Error exportacion: {}", e));
             }
         }

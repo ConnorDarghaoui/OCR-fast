@@ -2,7 +2,7 @@ use crate::domain::errors::{
     DocumentError, ExportError, JobStoreError, LayoutError, ModelDownloadError, OcrError,
     PreprocessError,
 };
-use crate::domain::{Block, Document, Job, Page, ProcessingProfile};
+use crate::domain::{Block, Document, DocumentBlueprint, Job, Page, ProcessingProfile};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -183,6 +183,31 @@ pub trait TableAnalyzerPort: Send + Sync {
     /// Detecta estructura interna en bloques marcados como tabla.
     fn analyze_tables(&self, document: &mut Document) -> Result<(), LayoutError>;
     /// Nombre del analizador para observabilidad y soporte.
+    fn name(&self) -> &str;
+}
+
+/// Contrato para reconstrucción visual posterior a OCR y layout.
+///
+/// El builder traduce el árbol crudo del dominio a una representación intermedia
+/// orientada a exportadores ricos como LaTeX o PDF reconstruido. Esta fase
+/// existe para evitar que cada exportador reimplante heurísticas de columnas,
+/// anclas visuales y preservación de imágenes.
+///
+/// # Trade-offs
+///
+/// El contrato opera sobre `Document` completo y no sobre páginas aisladas porque
+/// el exportador necesita una vista coherente del documento final. Esa decisión
+/// simplifica exportación a costa de impedir streaming total en esta frontera.
+pub trait DocumentBlueprintBuilderPort: Send + Sync {
+    /// Construye un blueprint visual listo para exportación de alta fidelidad.
+    ///
+    /// # Errors
+    ///
+    /// Retorna `LayoutError` cuando las invariantes geométricas del documento son
+    /// insuficientes para producir un orden visual reproducible.
+    fn build_blueprint(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError>;
+
+    /// Nombre estable del builder para trazabilidad y diagnóstico.
     fn name(&self) -> &str;
 }
 

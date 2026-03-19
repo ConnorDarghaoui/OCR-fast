@@ -1,10 +1,20 @@
-use ocrfast::application::pipeline::{OcrPipeline, PipelineEvent};
+use ocrfast::application::pipeline::{
+    ConfidenceBoostPass, NoopRefinementPass, OcrPipeline, PipelineEvent, PipelineFailure,
+    RefinementBudget, RefinementContext, RefinementPass, RefinementStage,
+};
+use ocrfast::domain::errors::DocumentError;
 use ocrfast::domain::errors::{LayoutError, OcrError};
-use ocrfast::domain::{Document, ProcessingProfile};
+use ocrfast::domain::{
+    Block, BlockType, Dimensions, Document, DocumentBlueprint, Page, ProcessingProfile, Rectangle,
+};
+use ocrfast::infrastructure::document_blueprints::HighFidelityBlueprintBuilder;
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
-use ocrfast::interfaces::ports::DocumentAssemblerPort;
-use ocrfast::interfaces::ports::{OcrEnginePort, PostprocessorPort};
+use ocrfast::interfaces::ports::{
+    DocumentAssemblerPort, DocumentParserPort, OcrEnginePort, PostprocessorPort,
+};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
 struct StubOcrEngine;
@@ -48,6 +58,308 @@ impl PostprocesadorRegistrador {
 impl PostprocessorPort for PostprocesadorRegistrador {
     fn postprocess(&self, _document: &mut Document) -> Result<(), OcrError> {
         *self.llamado.lock().unwrap() = true;
+        Ok(())
+    }
+}
+
+struct PostprocesadorMayusculas;
+
+impl PostprocessorPort for PostprocesadorMayusculas {
+    fn postprocess(&self, document: &mut Document) -> Result<(), OcrError> {
+        for pagina in &mut document.pages {
+            for bloque in &mut pagina.blocks {
+                bloque.content = bloque.content.to_uppercase();
+            }
+        }
+        Ok(())
+    }
+}
+
+struct RefinamientoRegistrador {
+    stage: RefinementStage,
+    nombre: &'static str,
+    llamado: std::sync::Mutex<u32>,
+    vio_blueprint: std::sync::Mutex<bool>,
+}
+
+impl RefinamientoRegistrador {
+    fn new(stage: RefinementStage, nombre: &'static str) -> Self {
+        Self {
+            stage,
+            nombre,
+            llamado: std::sync::Mutex::new(0),
+            vio_blueprint: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn llamadas(&self) -> u32 {
+        *self.llamado.lock().unwrap()
+    }
+
+    fn vio_blueprint(&self) -> bool {
+        *self.vio_blueprint.lock().unwrap()
+    }
+}
+
+impl RefinementPass for RefinamientoRegistrador {
+    fn stage(&self) -> RefinementStage {
+        self.stage
+    }
+
+    fn name(&self) -> &str {
+        self.nombre
+    }
+
+    fn refine(
+        &self,
+        document: &mut Document,
+        blueprint: &mut Option<DocumentBlueprint>,
+        context: &RefinementContext<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        *self.llamado.lock().unwrap() += 1;
+        if blueprint.is_some() {
+            *self.vio_blueprint.lock().unwrap() = true;
+        }
+        document.metadata.insert(
+            format!("refinement:{}", self.nombre),
+            format!(
+                "{:?}:{}:{}",
+                context.stage, context.consumed_passes, context.remaining_passes
+            ),
+        );
+        Ok(())
+    }
+}
+
+struct ParserBloquesDebiles;
+
+impl DocumentParserPort for ParserBloquesDebiles {
+    fn parse(&self, path: &Path) -> Result<Document, DocumentError> {
+        Ok(Document {
+            id: "doc-low-confidence".to_string(),
+            source_path: path.to_path_buf(),
+            pages: vec![Page {
+                number: 1,
+                dimensions: Dimensions {
+                    width: 1200,
+                    height: 1600,
+                },
+                blocks: vec![
+                    Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 100,
+                            y: 120,
+                            width: 500,
+                            height: 140,
+                        },
+                        content: String::new(),
+                        confidence: 0.0,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
+                    },
+                    Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 100,
+                            y: 320,
+                            width: 500,
+                            height: 140,
+                        },
+                        content: String::new(),
+                        confidence: 0.0,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 1,
+                    },
+                ],
+                image_data: None,
+            }],
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+struct OcrEngineDeRefuerzo;
+
+impl OcrEnginePort for OcrEngineDeRefuerzo {
+    fn process(
+        &self,
+        document: &mut Document,
+        profile: &ProcessingProfile,
+    ) -> Result<(), OcrError> {
+        let bloques = &mut document.pages[0].blocks;
+        match profile {
+            ProcessingProfile::Balanced => {
+                bloques[0].content = "texto borroso".to_string();
+                bloques[0].confidence = 0.42;
+                bloques[1].content = "texto estable".to_string();
+                bloques[1].confidence = 0.93;
+            }
+            ProcessingProfile::Accurate => {
+                bloques[0].content = "texto corregido".to_string();
+                bloques[0].confidence = 0.89;
+                bloques[1].content = "texto estable".to_string();
+                bloques[1].confidence = 0.94;
+            }
+            ProcessingProfile::Fast => {
+                bloques[0].content = "texto rapido".to_string();
+                bloques[0].confidence = 0.35;
+                bloques[1].content = "texto estable".to_string();
+                bloques[1].confidence = 0.80;
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "OcrEngineDeRefuerzo"
+    }
+}
+
+struct ParserPaginasMixtas;
+
+impl DocumentParserPort for ParserPaginasMixtas {
+    fn parse(&self, path: &Path) -> Result<Document, DocumentError> {
+        Ok(Document {
+            id: "doc-mixed-confidence".to_string(),
+            source_path: path.to_path_buf(),
+            pages: vec![
+                Page {
+                    number: 1,
+                    dimensions: Dimensions {
+                        width: 800,
+                        height: 1200,
+                    },
+                    blocks: vec![Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 80,
+                            y: 100,
+                            width: 500,
+                            height: 120,
+                        },
+                        content: String::new(),
+                        confidence: 0.0,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
+                    }],
+                    image_data: None,
+                },
+                Page {
+                    number: 2,
+                    dimensions: Dimensions {
+                        width: 800,
+                        height: 1200,
+                    },
+                    blocks: vec![Block {
+                        block_type: BlockType::Text,
+                        bounding_box: Rectangle {
+                            x: 90,
+                            y: 160,
+                            width: 480,
+                            height: 120,
+                        },
+                        content: String::new(),
+                        confidence: 0.0,
+                        layout_confidence: None,
+                        embedded_image: None,
+                        table_structure: None,
+                        reading_order: 0,
+                    }],
+                    image_data: None,
+                },
+            ],
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+struct OcrEngineRegistraReintento {
+    paginas_reintentadas: std::sync::Mutex<Vec<usize>>,
+}
+
+impl OcrEngineRegistraReintento {
+    fn new() -> Self {
+        Self {
+            paginas_reintentadas: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn paginas_reintentadas(&self) -> Vec<usize> {
+        self.paginas_reintentadas.lock().unwrap().clone()
+    }
+}
+
+impl OcrEnginePort for OcrEngineRegistraReintento {
+    fn process(
+        &self,
+        document: &mut Document,
+        profile: &ProcessingProfile,
+    ) -> Result<(), OcrError> {
+        if *profile == ProcessingProfile::Accurate {
+            self.paginas_reintentadas
+                .lock()
+                .unwrap()
+                .push(document.pages.len());
+        }
+
+        for pagina in &mut document.pages {
+            let bloque = &mut pagina.blocks[0];
+            match (*profile, pagina.number) {
+                (ProcessingProfile::Balanced, 1) => {
+                    bloque.content = "pagina debil".to_string();
+                    bloque.confidence = 0.42;
+                }
+                (ProcessingProfile::Balanced, 2) => {
+                    bloque.content = "pagina estable".to_string();
+                    bloque.confidence = 0.95;
+                }
+                (ProcessingProfile::Accurate, 1) => {
+                    bloque.content = "pagina corregida".to_string();
+                    bloque.confidence = 0.90;
+                }
+                (ProcessingProfile::Accurate, 2) => {
+                    bloque.content = "pagina estable".to_string();
+                    bloque.confidence = 0.95;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "OcrEngineRegistraReintento"
+    }
+}
+
+struct PassCancela {
+    cancelacion: Arc<AtomicBool>,
+}
+
+impl RefinementPass for PassCancela {
+    fn stage(&self) -> RefinementStage {
+        RefinementStage::AfterBlueprint
+    }
+
+    fn name(&self) -> &str {
+        "PassCancela"
+    }
+
+    fn refine(
+        &self,
+        _document: &mut Document,
+        _blueprint: &mut Option<DocumentBlueprint>,
+        _context: &RefinementContext<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.cancelacion.store(true, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -228,7 +540,257 @@ fn test_pipeline_confianza_en_rango_valido() {
     }
 }
 
-/// Verifica que el ensamblador final se ejecute tras OCR y postproceso.
+#[test]
+fn test_pipeline_invoca_refinement_pass_despues_del_blueprint() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let refinamiento = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::AfterBlueprint,
+        "after-blueprint",
+    ));
+    let refinamiento_ref = Arc::clone(&refinamiento);
+
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
+        .with_refinement_pass(refinamiento)
+        .with_refinement_budget(RefinementBudget::new(2));
+
+    let resultado = pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_refinement_after_blueprint.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe completar refinamiento tras blueprint");
+
+    assert!(resultado.blueprint.is_some());
+    assert_eq!(refinamiento_ref.llamadas(), 1);
+    assert!(refinamiento_ref.vio_blueprint());
+    assert_eq!(
+        resultado
+            .document
+            .metadata
+            .get("refinement:after-blueprint")
+            .map(String::as_str),
+        Some("AfterBlueprint:0:2")
+    );
+}
+
+#[test]
+fn test_pipeline_refinement_budget_limita_passes() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let primer_pass = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::AfterBlueprint,
+        "primero",
+    ));
+    let segundo_pass = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::AfterBlueprint,
+        "segundo",
+    ));
+    let primer_ref = Arc::clone(&primer_pass);
+    let segundo_ref = Arc::clone(&segundo_pass);
+
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
+        .with_refinement_pass(primer_pass)
+        .with_refinement_pass(segundo_pass)
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_refinement_budget.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe respetar presupuesto de refinamiento");
+
+    assert_eq!(primer_ref.llamadas(), 1);
+    assert_eq!(segundo_ref.llamadas(), 0);
+}
+
+#[test]
+fn test_pipeline_invoca_refinement_pass_antes_del_blueprint_sin_builder() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let refinamiento = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::BeforeBlueprint,
+        "before-blueprint",
+    ));
+    let refinamiento_ref = Arc::clone(&refinamiento);
+
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_refinement_pass(refinamiento)
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let documento = pipeline
+        .procesar_documento(
+            Path::new("/tmp/doc_refinement_before_blueprint.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe permitir refinamiento sin blueprint");
+
+    assert_eq!(refinamiento_ref.llamadas(), 1);
+    assert!(!refinamiento_ref.vio_blueprint());
+    assert_eq!(
+        documento
+            .metadata
+            .get("refinement:before-blueprint")
+            .map(String::as_str),
+        Some("BeforeBlueprint:0:1")
+    );
+}
+
+#[test]
+fn test_pipeline_admite_noop_refinement_pass() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
+        .with_refinement_pass(Arc::new(NoopRefinementPass::default()))
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let resultado = pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_refinement_noop.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("El NoopRefinementPass no debe romper la corrida");
+
+    assert!(resultado.blueprint.is_some());
+}
+
+#[test]
+fn test_pipeline_confidence_boost_mejora_solo_bloques_debiles() {
+    let parser = Arc::new(ParserBloquesDebiles);
+    let ocr: Arc<dyn OcrEnginePort> = Arc::new(OcrEngineDeRefuerzo);
+
+    let pipeline = OcrPipeline::new(parser, Arc::clone(&ocr))
+        .with_refinement_pass(Arc::new(ConfidenceBoostPass::with_config(
+            ocr,
+            0.78,
+            0.05,
+            ProcessingProfile::Accurate,
+        )))
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let documento = pipeline
+        .procesar_documento(
+            Path::new("/tmp/doc_refinement_confidence_boost.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe aplicar el refuerzo OCR");
+
+    assert_eq!(documento.pages[0].blocks[0].content, "texto corregido");
+    assert!(
+        (documento.pages[0].blocks[0].confidence - 0.89).abs() < f64::EPSILON,
+        "El bloque debil debe adoptar el OCR de mayor confianza"
+    );
+    assert_eq!(documento.pages[0].blocks[1].content, "texto estable");
+    assert!(
+        (documento.pages[0].blocks[1].confidence - 0.93).abs() < f64::EPSILON,
+        "El bloque ya confiable no debe reescribirse por una mejora marginal"
+    );
+}
+
+#[test]
+fn test_pipeline_confidence_boost_se_postprocesa_despues_del_reintento() {
+    let parser = Arc::new(ParserBloquesDebiles);
+    let ocr: Arc<dyn OcrEnginePort> = Arc::new(OcrEngineDeRefuerzo);
+
+    let pipeline = OcrPipeline::new(parser, Arc::clone(&ocr))
+        .with_postprocessor(Arc::new(PostprocesadorMayusculas))
+        .with_refinement_pass(Arc::new(ConfidenceBoostPass::with_config(
+            ocr,
+            0.78,
+            0.05,
+            ProcessingProfile::Accurate,
+        )))
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let documento = pipeline
+        .procesar_documento(
+            Path::new("/tmp/doc_refinement_postprocess.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe postprocesar el contenido reintentado");
+
+    assert_eq!(documento.pages[0].blocks[0].content, "TEXTO CORREGIDO");
+    assert_eq!(documento.pages[0].blocks[1].content, "TEXTO ESTABLE");
+}
+
+#[test]
+fn test_pipeline_confidence_boost_reintenta_solo_paginas_debiles() {
+    let parser = Arc::new(ParserPaginasMixtas);
+    let ocr = Arc::new(OcrEngineRegistraReintento::new());
+    let ocr_port: Arc<dyn OcrEnginePort> = ocr.clone();
+
+    let pipeline = OcrPipeline::new(parser, Arc::clone(&ocr_port))
+        .with_refinement_pass(Arc::new(ConfidenceBoostPass::with_config(
+            ocr_port,
+            0.78,
+            0.05,
+            ProcessingProfile::Accurate,
+        )))
+        .with_refinement_budget(RefinementBudget::new(1));
+
+    let documento = pipeline
+        .procesar_documento(
+            Path::new("/tmp/doc_refinement_retry_pages.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("Pipeline debe reintentar solo paginas debiles");
+
+    assert_eq!(ocr.paginas_reintentadas(), vec![1]);
+    assert_eq!(documento.pages[0].blocks[0].content, "pagina corregida");
+    assert_eq!(documento.pages[1].blocks[0].content, "pagina estable");
+}
+
+#[test]
+fn test_pipeline_cancelacion_se_observa_entre_refinamientos() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let cancelacion = Arc::new(AtomicBool::new(false));
+    let segundo_pass = Arc::new(RefinamientoRegistrador::new(
+        RefinementStage::AfterBlueprint,
+        "no-debe-correr",
+    ));
+    let segundo_ref = Arc::clone(&segundo_pass);
+
+    let pipeline = OcrPipeline::new(parser, ocr)
+        .with_blueprint_builder(Arc::new(HighFidelityBlueprintBuilder::new()))
+        .with_refinement_pass(Arc::new(PassCancela {
+            cancelacion: Arc::clone(&cancelacion),
+        }))
+        .with_refinement_pass(segundo_pass)
+        .with_refinement_budget(RefinementBudget::new(2));
+
+    let error = match pipeline.procesar_documento_con_blueprint(
+        Path::new("/tmp/doc_refinement_cancel_between_passes.pdf"),
+        &ProcessingProfile::Balanced,
+        None,
+        Some(&cancelacion),
+    ) {
+        Ok(_) => panic!("La cancelacion entre passes debe abortar la corrida"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error, PipelineFailure::Cancelado);
+    assert_eq!(segundo_ref.llamadas(), 0);
+}
+
 #[test]
 fn test_pipeline_invoca_ensamblador_documento() {
     let parser = Arc::new(StubDocumentParser::new());
