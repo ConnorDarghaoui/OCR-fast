@@ -1,16 +1,19 @@
+use ocrfast::application::pipeline::recovery::ConfidenceBoostPass;
 use ocrfast::application::pipeline::{
     NoopRefinementPass, OcrPipeline, PipelineEvent, PipelineFailure, RefinementBudget,
     RefinementContext, RefinementPass, RefinementStage,
 };
-use ocrfast::application::pipeline::recovery::ConfidenceBoostPass;
 use ocrfast::domain::errors::DocumentError;
 use ocrfast::domain::errors::{LayoutError, OcrError};
 use ocrfast::domain::{
-    Block, BlockType, Dimensions, Document, DocumentBlueprint, Page, ProcessingProfile, Rectangle,
+    AlignmentHint, Block, BlockType, Dimensions, Document, DocumentBlueprint, ElementBlueprint,
+    ElementRole, EmphasisHint, Page, PageBlueprint, ProcessingMode, ProcessingProfile, Rectangle,
+    StyleHints,
 };
 use ocrfast::infrastructure::document_parsers::stub::StubDocumentParser;
 use ocrfast::interfaces::ports::{
-    DocumentAssemblerPort, DocumentParserPort, OcrEnginePort, PostprocessorPort,
+    DocumentAssemblerPort, DocumentBlueprintBuilderPort, DocumentParserPort, OcrEnginePort,
+    PostprocessorPort,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -399,6 +402,76 @@ impl DocumentAssemblerPort for EnsambladorRegistrador {
     }
 }
 
+struct BlueprintBuilderRegistrador {
+    llamado: std::sync::Mutex<bool>,
+}
+
+impl BlueprintBuilderRegistrador {
+    fn new() -> Self {
+        Self {
+            llamado: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn fue_llamado(&self) -> bool {
+        *self.llamado.lock().unwrap()
+    }
+}
+
+impl DocumentBlueprintBuilderPort for BlueprintBuilderRegistrador {
+    fn build_blueprint(&self, document: &Document) -> Result<DocumentBlueprint, LayoutError> {
+        *self.llamado.lock().unwrap() = true;
+
+        let pagina = document
+            .pages
+            .first()
+            .expect("stub parser debe generar pagina");
+
+        Ok(DocumentBlueprint {
+            document_id: document.id.clone(),
+            source_path: "legacy-builder".to_string(),
+            processing_mode: ProcessingMode::DocumentReconstruction,
+            pages: vec![PageBlueprint {
+                number: pagina.number,
+                dimensions: pagina.dimensions.clone(),
+                processing_mode: ProcessingMode::DocumentReconstruction,
+                elements: vec![ElementBlueprint {
+                    role: ElementRole::Unknown,
+                    bounding_box: Rectangle {
+                        x: 0,
+                        y: 0,
+                        width: pagina.dimensions.width,
+                        height: 1,
+                    },
+                    reading_order: 0,
+                    column_index: 0,
+                    total_columns: 1,
+                    text: "compat-builder".to_string(),
+                    ocr_confidence: None,
+                    layout_confidence: None,
+                    suspected_header: false,
+                    suspected_footer: false,
+                    table: None,
+                    image_crop: None,
+                    style: StyleHints {
+                        alignment: AlignmentHint::Left,
+                        emphasis: EmphasisHint::Regular,
+                        font_scale: 1.0,
+                        spacing_before_pt: 0.0,
+                        left_indent_pt: 0.0,
+                        keep_with_next: false,
+                        preserve_positioning: false,
+                    },
+                }],
+            }],
+        })
+    }
+
+    fn name(&self) -> &str {
+        "BlueprintBuilderRegistrador"
+    }
+}
+
 /// Verifica el flujo completo del pipeline con stubs: parseo → OCR → resultado.
 ///
 /// No requiere modelos ONNX ni archivos reales. StubDocumentParser genera
@@ -691,6 +764,33 @@ fn test_pipeline_con_blueprint_usa_page_composer_sin_builder_legacy() {
 }
 
 #[test]
+fn test_pipeline_con_blueprint_admite_override_del_builder_legacy() {
+    let parser = Arc::new(StubDocumentParser::new());
+    let ocr = Arc::new(StubOcrEngine);
+    let builder = Arc::new(BlueprintBuilderRegistrador::new());
+    let builder_ref = Arc::clone(&builder);
+    let pipeline = OcrPipeline::new(parser, ocr).with_blueprint_builder(builder);
+
+    let resultado = pipeline
+        .procesar_documento_con_blueprint(
+            Path::new("/tmp/doc_blueprint_legacy_override.pdf"),
+            &ProcessingProfile::Balanced,
+            None,
+            None,
+        )
+        .expect("El pipeline debe soportar el hook legacy del builder");
+
+    let blueprint = resultado
+        .blueprint
+        .expect("El override legacy debe producir un blueprint");
+
+    assert!(builder_ref.fue_llamado());
+    assert_eq!(blueprint.source_path, "legacy-builder");
+    assert_eq!(blueprint.pages.len(), 1);
+    assert_eq!(blueprint.pages[0].elements[0].text, "compat-builder");
+}
+
+#[test]
 fn test_pipeline_confidence_boost_mejora_solo_bloques_debiles() {
     let parser = Arc::new(ParserBloquesDebiles);
     let ocr: Arc<dyn OcrEnginePort> = Arc::new(OcrEngineDeRefuerzo);
@@ -815,7 +915,7 @@ fn test_pipeline_cancelacion_se_observa_entre_refinamientos() {
 }
 
 #[test]
-fn test_pipeline_invoca_ensamblador_documento() {
+fn test_pipeline_invoca_ensamblador_documento_legacy_si_se_configura() {
     let parser = Arc::new(StubDocumentParser::new());
     let ocr = Arc::new(StubOcrEngine);
     let ensamblador = Arc::new(EnsambladorRegistrador::new());

@@ -1723,7 +1723,7 @@ mod exporter_tests {
     }
 
     #[test]
-    fn test_txt_exporta_en_orden_de_lectura_canonico() {
+    fn test_legacy_assembler_aun_puede_reordenar_para_txt() {
         let dir = std::env::temp_dir().join("ocrfast_exp_test_txt_order");
         std::fs::create_dir_all(&dir).unwrap();
         let ruta = dir.join("output.txt");
@@ -1777,6 +1777,9 @@ mod exporter_tests {
             },
         ];
 
+        // Cobertura explícita del adaptador legacy: el camino canónico del
+        // producto ya no usa este ensamblador en runtime, pero el adaptador
+        // debe seguir funcionando mientras exista la API histórica.
         LayoutGuidedDocumentAssembler::new()
             .assemble(&mut job.document)
             .unwrap();

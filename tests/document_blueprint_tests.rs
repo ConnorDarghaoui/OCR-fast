@@ -144,7 +144,7 @@ fn documento_captura_marketplace() -> Document {
 }
 
 #[test]
-fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
+fn test_legacy_builder_detecta_columnas_y_preserva_imagenes() {
     let builder = HighFidelityBlueprintBuilder::new();
     let blueprint = builder
         .build_blueprint(&documento_dos_columnas())
@@ -207,7 +207,7 @@ fn test_blueprint_detecta_columnas_y_preserva_imagenes() {
 }
 
 #[test]
-fn test_blueprint_marca_hints_conservadores_para_header_y_footer() {
+fn test_legacy_builder_marca_hints_conservadores_para_header_y_footer() {
     let builder = HighFidelityBlueprintBuilder::new();
     let blueprint = builder
         .build_blueprint(&documento_con_header_footer_repetido())
@@ -264,7 +264,7 @@ fn test_pipeline_retorna_blueprint_sin_romper_documento_clasico() {
 }
 
 #[test]
-fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
+fn test_legacy_builder_detecta_captura_visual_y_evita_reflujo_documental() {
     let builder = HighFidelityBlueprintBuilder::new();
     let blueprint = builder
         .build_blueprint(&documento_captura_marketplace())
@@ -298,7 +298,7 @@ fn test_blueprint_detecta_captura_visual_y_evita_reflujo_documental() {
 }
 
 #[test]
-fn test_blueprint_honra_override_manual_documental_desde_metadata() {
+fn test_legacy_builder_honra_override_manual_documental_desde_metadata() {
     let mut documento = documento_captura_marketplace();
     documento.metadata.insert(
         DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
@@ -316,7 +316,7 @@ fn test_blueprint_honra_override_manual_documental_desde_metadata() {
 }
 
 #[test]
-fn test_blueprint_honra_override_manual_visual_desde_metadata() {
+fn test_legacy_builder_honra_override_manual_visual_desde_metadata() {
     let mut documento = documento_dos_columnas();
     documento.metadata.insert(
         DOCUMENT_METADATA_PROCESSING_MODE_PREFERENCE.to_string(),
