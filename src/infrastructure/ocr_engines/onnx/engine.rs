@@ -105,11 +105,7 @@ impl OnnxOcrEngine {
         imagen: &DynamicImage,
         profile: &ProcessingProfile,
     ) -> Result<Vec<Block>, OcrError> {
-        let (umbral_conf, umbral_nms, umbral_bin, tam_min): (f32, f32, f32, u32) = match profile {
-            ProcessingProfile::Fast => (0.25, 0.50, 0.35, 8),
-            ProcessingProfile::Balanced => (0.30, 0.45, 0.30, 5),
-            ProcessingProfile::Accurate => (0.40, 0.35, 0.25, 3),
-        };
+        let (umbral_conf, umbral_nms, umbral_bin, tam_min) = thresholds_for_profile(profile);
 
         let imagen_corregida = match profile {
             ProcessingProfile::Fast => {
@@ -126,6 +122,18 @@ impl OnnxOcrEngine {
             .layout
             .analizar_imagen_con_umbrales(&imagen_corregida, umbral_conf, umbral_nms)
             .map_err(|e| OcrError::RecognitionError(e.to_string()))?;
+
+        if bloques.is_empty() && *profile == ProcessingProfile::Accurate {
+            let (fallback_conf, fallback_nms, _, _) =
+                thresholds_for_profile(&ProcessingProfile::Balanced);
+            log::warn!(
+                "Layout preciso devolvio 0 bloques; reintentando solo layout con umbrales de Balanced"
+            );
+            bloques = self
+                .layout
+                .analizar_imagen_con_umbrales(&imagen_corregida, fallback_conf, fallback_nms)
+                .map_err(|e| OcrError::RecognitionError(e.to_string()))?;
+        }
 
         for bloque in &mut bloques {
             match bloque.block_type {
@@ -267,6 +275,14 @@ impl OnnxOcrEngine {
         }
 
         Some(imagen.crop_imm(x, y, ancho, alto))
+    }
+}
+
+fn thresholds_for_profile(profile: &ProcessingProfile) -> (f32, f32, f32, u32) {
+    match profile {
+        ProcessingProfile::Fast => (0.25, 0.50, 0.35, 8),
+        ProcessingProfile::Balanced => (0.30, 0.45, 0.30, 5),
+        ProcessingProfile::Accurate => (0.40, 0.35, 0.25, 3),
     }
 }
 
