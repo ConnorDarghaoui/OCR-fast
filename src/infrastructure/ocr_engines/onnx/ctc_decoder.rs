@@ -64,16 +64,13 @@ pub fn decodificar_ctc_con_confianza(
     let mut conteo_caracteres = 0u32;
 
     for chunk in predicciones.chunks(tamano_vocabulario) {
-        let max_val = chunk.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let exp_sum: f32 = chunk.iter().map(|&x| (x - max_val).exp()).sum();
-
         let (indice_maximo, puntuacion_raw) = chunk
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or((0, &0.0));
 
-        let probabilidad = (puntuacion_raw - max_val).exp() / exp_sum;
+        let probabilidad = estimar_probabilidad_maxima(chunk, *puntuacion_raw);
 
         if indice_maximo != 0 && indice_maximo != indice_anterior {
             let indice_dict = indice_maximo - 1;
@@ -95,6 +92,26 @@ pub fn decodificar_ctc_con_confianza(
     };
 
     (resultado, confianza_promedio)
+}
+
+fn estimar_probabilidad_maxima(chunk: &[f32], puntuacion_maxima: f32) -> f64 {
+    let suma: f32 = chunk.iter().copied().sum();
+    let parece_probabilidad = chunk
+        .iter()
+        .all(|valor| valor.is_finite() && *valor >= -1e-6 && *valor <= 1.0 + 1e-3)
+        && (0.98..=1.02).contains(&suma);
+
+    if parece_probabilidad {
+        puntuacion_maxima as f64
+    } else {
+        let max_val = chunk.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_sum: f32 = chunk.iter().map(|&x| (x - max_val).exp()).sum();
+        if exp_sum <= f32::EPSILON {
+            0.0
+        } else {
+            ((puntuacion_maxima - max_val).exp() / exp_sum) as f64
+        }
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +152,23 @@ mod tests {
 
         let resultado = decodificar_ctc(&predicciones, 5, &diccionario);
         assert_eq!(resultado, "hola");
+    }
+
+    #[test]
+    fn test_decodificar_ctc_con_confianza_respeta_probabilidades_normalizadas() {
+        let diccionario = vec!["a".to_string(), "b".to_string()];
+        let predicciones = vec![
+            0.05, 0.90, 0.05, //
+            0.10, 0.15, 0.75, //
+        ];
+
+        let (texto, confianza) = decodificar_ctc_con_confianza(&predicciones, 3, &diccionario);
+
+        assert_eq!(texto, "ab");
+        assert!(
+            (confianza - 0.825).abs() < 0.001,
+            "confianza esperada 0.825, fue {}",
+            confianza
+        );
     }
 }

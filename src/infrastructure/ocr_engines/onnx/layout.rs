@@ -78,11 +78,23 @@ impl DocLayoutYoloEngine {
         let detecciones_filtradas = aplicar_nms(detecciones_raw, umbral_nms);
         let mut bloques: Vec<Block> = Vec::new();
 
+        let ancho_pagina = imagen.width() as f32;
+        let alto_pagina = imagen.height() as f32;
+
         for (i, det) in detecciones_filtradas.iter().enumerate() {
-            let x = (det.x * escala_inv_x) as u32;
-            let y = (det.y * escala_inv_y) as u32;
-            let ancho = (det.ancho * escala_inv_x) as u32;
-            let alto = (det.alto * escala_inv_y) as u32;
+            let x1 = (det.x * escala_inv_x).clamp(0.0, ancho_pagina);
+            let y1 = (det.y * escala_inv_y).clamp(0.0, alto_pagina);
+            let x2 = ((det.x + det.ancho) * escala_inv_x).clamp(0.0, ancho_pagina);
+            let y2 = ((det.y + det.alto) * escala_inv_y).clamp(0.0, alto_pagina);
+
+            if x2 <= x1 || y2 <= y1 {
+                continue;
+            }
+
+            let x = x1 as u32;
+            let y = y1 as u32;
+            let ancho = (x2 - x1) as u32;
+            let alto = (y2 - y1) as u32;
 
             let tipo_bloque = match det.clase {
                 0 => BlockType::Title,
@@ -131,54 +143,133 @@ impl DocLayoutYoloEngine {
             LayoutError::SegmentationError(format!("Error extrayendo tensor: {}", e))
         })?;
 
-        let forma = &*forma_info;
-
-        if forma.len() != 3 {
-            return Err(LayoutError::SegmentationError(format!(
-                "Forma inesperada del output: {:?}",
-                forma
-            )));
-        }
-
-        let num_atributos = forma[1] as usize;
-        let num_detecciones = forma[2] as usize;
-        let num_clases = num_atributos - 4;
-
-        let mut detecciones = Vec::new();
-
-        for d in 0..num_detecciones {
-            let cx = datos[0 * num_detecciones + d];
-            let cy = datos[1 * num_detecciones + d];
-            let w = datos[2 * num_detecciones + d];
-            let h = datos[3 * num_detecciones + d];
-
-            let mut mejor_clase = 0usize;
-            let mut mejor_score = f32::NEG_INFINITY;
-
-            for c in 0..num_clases {
-                let score = datos[(4 + c) * num_detecciones + d];
-                if score > mejor_score {
-                    mejor_score = score;
-                    mejor_clase = c;
-                }
-            }
-
-            if mejor_score < umbral_confianza {
-                continue;
-            }
-
-            detecciones.push(DeteccionRaw {
-                x: cx - w / 2.0,
-                y: cy - h / 2.0,
-                ancho: w,
-                alto: h,
-                confianza: mejor_score,
-                clase: mejor_clase,
-            });
-        }
-
-        Ok(detecciones)
+        parsear_tensor_yolo_con_umbral(&*forma_info, &datos, umbral_confianza)
     }
+}
+
+fn parsear_tensor_yolo_con_umbral(
+    forma: &[i64],
+    datos: &[f32],
+    umbral_confianza: f32,
+) -> Result<Vec<DeteccionRaw>, LayoutError> {
+    if forma.len() != 3 {
+        return Err(LayoutError::SegmentationError(format!(
+            "Forma inesperada del output: {:?}",
+            forma
+        )));
+    }
+
+    match (forma[1] as usize, forma[2] as usize) {
+        (_, 6) => parsear_formato_filas_xyxy(forma, datos, umbral_confianza),
+        (atributos, detecciones) if atributos >= 5 && detecciones > 0 => {
+            parsear_formato_columnas_cxcywh(forma, datos, umbral_confianza)
+        }
+        _ => Err(LayoutError::SegmentationError(format!(
+            "Formato de output YOLO no soportado: {:?}",
+            forma
+        ))),
+    }
+}
+
+fn parsear_formato_filas_xyxy(
+    forma: &[i64],
+    datos: &[f32],
+    umbral_confianza: f32,
+) -> Result<Vec<DeteccionRaw>, LayoutError> {
+    let num_detecciones = forma[1] as usize;
+    let atributos = forma[2] as usize;
+    if atributos < 6 {
+        return Err(LayoutError::SegmentationError(format!(
+            "Formato XYXY invalido, atributos insuficientes: {:?}",
+            forma
+        )));
+    }
+
+    let mut detecciones = Vec::new();
+    for d in 0..num_detecciones {
+        let base = d * atributos;
+        let x1 = datos[base];
+        let y1 = datos[base + 1];
+        let x2 = datos[base + 2];
+        let y2 = datos[base + 3];
+        let score = datos[base + 4];
+        let clase = datos[base + 5];
+
+        if score < umbral_confianza || !score.is_finite() {
+            continue;
+        }
+        if !(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite()) {
+            continue;
+        }
+
+        let ancho = (x2 - x1).max(0.0);
+        let alto = (y2 - y1).max(0.0);
+        if ancho <= 0.0 || alto <= 0.0 {
+            continue;
+        }
+
+        detecciones.push(DeteccionRaw {
+            x: x1,
+            y: y1,
+            ancho,
+            alto,
+            confianza: score,
+            clase: clase.max(0.0) as usize,
+        });
+    }
+
+    Ok(detecciones)
+}
+
+fn parsear_formato_columnas_cxcywh(
+    forma: &[i64],
+    datos: &[f32],
+    umbral_confianza: f32,
+) -> Result<Vec<DeteccionRaw>, LayoutError> {
+    let num_atributos = forma[1] as usize;
+    let num_detecciones = forma[2] as usize;
+    let num_clases = num_atributos - 4;
+
+    let mut detecciones = Vec::new();
+
+    for d in 0..num_detecciones {
+        let cx = datos[d];
+        let cy = datos[num_detecciones + d];
+        let w = datos[2 * num_detecciones + d];
+        let h = datos[3 * num_detecciones + d];
+
+        let mut mejor_clase = 0usize;
+        let mut mejor_score = f32::NEG_INFINITY;
+
+        for c in 0..num_clases {
+            let score = datos[(4 + c) * num_detecciones + d];
+            if score > mejor_score {
+                mejor_score = score;
+                mejor_clase = c;
+            }
+        }
+
+        if mejor_score < umbral_confianza || !mejor_score.is_finite() {
+            continue;
+        }
+        if !(cx.is_finite() && cy.is_finite() && w.is_finite() && h.is_finite()) {
+            continue;
+        }
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+
+        detecciones.push(DeteccionRaw {
+            x: cx - w / 2.0,
+            y: cy - h / 2.0,
+            ancho: w,
+            alto: h,
+            confianza: mejor_score,
+            clase: mejor_clase,
+        });
+    }
+
+    Ok(detecciones)
 }
 
 /// Aplica Non-Maximum Suppression para eliminar detecciones duplicadas.
@@ -336,5 +427,47 @@ mod tests {
             "IoU contenida incorrecto: {}",
             iou
         );
+    }
+
+    #[test]
+    fn test_parsear_tensor_yolo_soporta_formato_real_filas_xyxy() {
+        let forma = vec![1, 2, 6];
+        let datos = vec![
+            10.0, 20.0, 110.0, 120.0, 0.95, 1.0, //
+            50.0, 60.0, 90.0, 100.0, 0.20, 0.0, //
+        ];
+
+        let detecciones = parsear_tensor_yolo_con_umbral(&forma, &datos, 0.3).unwrap();
+
+        assert_eq!(detecciones.len(), 1);
+        assert!((detecciones[0].x - 10.0).abs() < 0.001);
+        assert!((detecciones[0].y - 20.0).abs() < 0.001);
+        assert!((detecciones[0].ancho - 100.0).abs() < 0.001);
+        assert!((detecciones[0].alto - 100.0).abs() < 0.001);
+        assert!((detecciones[0].confianza - 0.95).abs() < 0.001);
+        assert_eq!(detecciones[0].clase, 1);
+    }
+
+    #[test]
+    fn test_parsear_tensor_yolo_soporta_formato_columnas_cxcywh() {
+        let forma = vec![1, 6, 2];
+        let datos = vec![
+            60.0, 30.0, // cx
+            80.0, 40.0, // cy
+            20.0, 10.0, // w
+            40.0, 20.0, // h
+            0.9, 0.2, // class 0
+            0.1, 0.8, // class 1
+        ];
+
+        let detecciones = parsear_tensor_yolo_con_umbral(&forma, &datos, 0.3).unwrap();
+
+        assert_eq!(detecciones.len(), 2);
+        assert!((detecciones[0].x - 50.0).abs() < 0.001);
+        assert!((detecciones[0].y - 60.0).abs() < 0.001);
+        assert!((detecciones[0].ancho - 20.0).abs() < 0.001);
+        assert!((detecciones[0].alto - 40.0).abs() < 0.001);
+        assert_eq!(detecciones[0].clase, 0);
+        assert_eq!(detecciones[1].clase, 1);
     }
 }
