@@ -8,6 +8,10 @@ pdfium.dll
 # Modelos ONNX (descargados en runtime, ~GB)
 models/
 
+# Corpus real local y salidas de benchmarking
+tests/fixtures/real/local/
+tests/fixtures/real/output/
+
 # Claude Code
 .claude/
 
